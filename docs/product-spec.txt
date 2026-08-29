@@ -1,0 +1,1167 @@
+TỔNG HỢP Ý TƯỞNG WEBSITE QUẢN LÝ VÀ LẬP KẾ HOẠCH CÁ NHÂN
+Ngày chốt nội dung: 29/08/2026
+
+Tên ứng dụng chính thức: myplan
+Ngôn ngữ ứng dụng: English
+Ngôn ngữ source code: English
+
+======================================================================
+1. MỤC TIÊU SẢN PHẨM
+======================================================================
+
+Xây dựng myplan, một website/PWA riêng tư dành cho khoảng 1-3 người dùng độc lập,
+giúp mỗi người quản lý
+toàn bộ quá trình từ định hướng dài hạn đến hành động hằng ngày trong một app:
+
+Tầm nhìn -> Mục tiêu -> Kết quả đo lường -> Cột mốc -> Công việc
+-> Lịch thực hiện -> Nhắc giờ -> Ghi nhận kết quả -> Rà soát và điều chỉnh
+
+App tự quản lý timeline, calendar và reminder; không phụ thuộc hoặc đồng bộ với
+Google Calendar, Apple Calendar hay ứng dụng lịch bên ngoài.
+
+Sản phẩm không chỉ là một ứng dụng lịch. Điểm khác biệt chính là liên kết kế
+hoạch dài hạn với việc thực hiện và cải tiến mỗi ngày.
+
+Quy ước ngôn ngữ:
+
+- Tên sản phẩm luôn viết là "myplan".
+- Toàn bộ giao diện, menu, nút, thông báo và nội dung mặc định dùng English.
+- Toàn bộ source code, tên biến, tên hàm, class, type, API, database table,
+  database column, migration, comment, test và tài liệu kỹ thuật dùng English.
+- Không trộn tiếng Việt vào source code hoặc dữ liệu seed mặc định.
+- Tài liệu tổng hợp hiện tại vẫn viết bằng tiếng Việt để ghi lại quá trình bàn bạc.
+
+
+======================================================================
+2. KHUNG LẬP KẾ HOẠCH PHÂN TẦNG
+======================================================================
+
+Khung tham khảo:
+
+- 5 năm: Tầm nhìn, muốn trở thành ai và cuộc sống mong muốn.
+- 3 năm: Định hướng, vị trí hoặc năng lực cần đạt.
+- 1 năm: Các kết quả cụ thể và đo được.
+- 1 quý: 1-3 trọng tâm quan trọng nhất.
+- 1 tháng: Cột mốc cần hoàn thành trong quý.
+- 1 tuần: Những cam kết thực hiện.
+- 1 ngày: 1-3 hành động quan trọng và thời gian thực hiện.
+
+Đây không phải cấu trúc bắt buộc. Người dùng có thể dùng các tầng khác như:
+
+10 năm -> 2 năm -> 90 ngày -> Sprint 2 tuần -> Hôm nay
+
+hoặc:
+
+Năm -> Tháng -> Tuần -> Ngày
+
+Nguyên tắc liên kết hai chiều:
+
+- Từ trên xuống: Tầm nhìn dẫn đến mục tiêu và hành động.
+- Từ dưới lên: Kết quả thực tế dẫn đến việc điều chỉnh kế hoạch.
+
+Mỗi task phải trả lời được: "Việc này phục vụ mục tiêu nào?"
+Mỗi mục tiêu phải trả lời được: "Tuần này có hành động nào đưa mình đến gần nó?"
+
+
+======================================================================
+3. NĂM PHƯƠNG PHÁP VẬN HÀNH
+======================================================================
+
+3.1. OKR - Chọn đúng kết quả cần đạt
+
+- Objective: Mục tiêu định tính, có ý nghĩa và có thời hạn.
+- Key Results: 2-4 kết quả định lượng chứng minh Objective đã đạt.
+- Task không phải Key Result; task chỉ là hành động để tạo ra kết quả.
+- Với cá nhân, mỗi quý nên có 1-3 Objective và một Objective quan trọng nhất.
+
+Vai trò đối với plan:
+
+- Tạo ưu tiên.
+- Chuyển mong muốn thành kết quả đo được.
+- Liên kết mục tiêu năm/quý với hành động tháng/tuần/ngày.
+
+3.2. WOOP - Chuẩn bị cho trở ngại
+
+- Wish: Mong muốn.
+- Outcome: Kết quả tốt đẹp nhất.
+- Obstacle: Trở ngại nội tại quan trọng nhất.
+- Plan: Kế hoạch Nếu-Thì.
+
+Ví dụ:
+
+"Nếu quá mệt để học 45 phút, thì tôi sẽ thực hiện phiên tối thiểu 10 phút."
+
+Mỗi kế hoạch có thể có ba chế độ:
+
+- Tiêu chuẩn: Khối lượng bình thường.
+- Tối thiểu: Phiên bản nhỏ cho ngày khó khăn.
+- Khôi phục: Cách xử lý khi đã bỏ lỡ.
+
+Vai trò đối với plan: Không chỉ lập kế hoạch cho điều kiện lý tưởng mà còn xác
+định trước cách phản ứng khi gặp trở ngại.
+
+3.3. Kanban - Quản lý luồng công việc
+
+Workflow mặc định tham khảo:
+
+Backlog -> Tuần này -> Đang làm -> Đang chờ -> Hoàn thành
+
+Nguyên tắc quan trọng:
+
+- Có WIP limit, ví dụ tối đa 2-3 việc ở trạng thái Đang làm.
+- Task phải có tiêu chuẩn hoàn thành rõ ràng.
+- Không đưa toàn bộ backlog vào kế hoạch tuần.
+- Ưu tiên hoàn thành việc đang làm trước khi bắt đầu việc mới.
+
+Vai trò đối với plan: Kiểm soát số việc, trạng thái, điểm nghẽn và tình trạng bắt
+đầu quá nhiều nhưng hoàn thành quá ít.
+
+3.4. Time blocking - Đưa công việc vào thời gian thật
+
+Một time block gồm:
+
+Công việc + thời gian bắt đầu + thời gian kết thúc + địa điểm (nếu cần)
+
+Có thể phân loại thành deep work, shallow work, buffer và recovery. Chỉ nên dùng
+khoảng 60-70% năng lực khả dụng để dành chỗ cho nghỉ ngơi và việc phát sinh.
+
+Deadline và time block là hai khái niệm khác nhau:
+
+- Deadline: Khi nào bắt buộc hoàn thành.
+- Time block: Khi nào sẽ thực sự làm.
+
+Một task có thể có một deadline và nhiều time block.
+
+Vai trò đối với plan: Kiểm tra tính khả thi. Nếu calendar không còn đủ thời gian,
+kế hoạch đang quá tải dù danh sách task trông có vẻ hợp lý.
+
+3.5. PDCA - Rà soát và cải tiến
+
+- Plan: Đặt mục tiêu, hành động, thời gian và chỉ số.
+- Do: Thực hiện và ghi nhận dữ liệu thật.
+- Check: So sánh kế hoạch với thực tế, tìm nguyên nhân chênh lệch.
+- Act: Điều chỉnh khối lượng, lịch, môi trường hoặc phương pháp.
+
+Chu kỳ đề xuất:
+
+- Daily review ngắn.
+- Weekly review 15-20 phút.
+- Monthly review.
+- Quarterly OKR review.
+- Tầm nhìn dài hạn xem lại 1-2 lần mỗi năm hoặc khi hoàn cảnh thay đổi lớn.
+
+Nếu liên tục hoàn thành dưới 70%, cần giảm hoặc thiết kế lại kế hoạch thay vì chỉ
+ép bản thân cố gắng hơn.
+
+Tóm tắt vai trò:
+
+- OKR: Chọn đúng đích.
+- WOOP: Chuẩn bị cho khó khăn.
+- Kanban: Giới hạn và quản lý công việc.
+- Time blocking: Bảo đảm có thời gian thực hiện.
+- PDCA: Cải tiến kế hoạch bằng dữ liệu thực tế.
+
+
+======================================================================
+4. THIẾT KẾ LINH HOẠT, KHÔNG HARD-CODE PHƯƠNG PHÁP
+======================================================================
+
+Nguyên tắc:
+
+Hard-code các khối dữ liệu nền tảng; cấu hình cách chúng kết hợp.
+
+Các khối nền tảng:
+
+- Goal
+- Metric
+- Milestone
+- Task
+- Workflow và Workflow Status
+- Calendar Entry
+- Time Block
+- Reminder
+- Review
+- Rule
+- Relation
+- Template
+
+Không tạo các trường cố định như fiveYearGoal, threeYearGoal, yearGoal. Mỗi Goal
+có parent_id tùy chọn, start_at, end_at và một planning horizon có thể cấu hình.
+
+Các phương pháp được tạo từ khối nền tảng:
+
+- OKR = Goal + Metric.
+- WOOP = Template câu hỏi + quy tắc Nếu-Thì.
+- Kanban = Task + workflow cấu hình được.
+- Time blocking = Task + Calendar Entry/Time Block.
+- PDCA = Review template + metric + adjustment.
+- Kế hoạch phân tầng = Goal + quan hệ cha-con + planning horizon.
+
+Các thành phần nên cấu hình được:
+
+- Tầng thời gian.
+- Tên và thứ tự trạng thái Kanban.
+- WIP limit.
+- Câu hỏi review.
+- Cách tính tiến độ.
+- Trường tùy chỉnh.
+- Chu kỳ rà soát.
+- Quy tắc nhắc việc.
+- Template phương pháp.
+
+Các thành phần phải cố định và kiểm soát chặt:
+
+- ID và quyền sở hữu dữ liệu.
+- Quy tắc bảo mật và mã hóa.
+- Lịch sử thay đổi.
+- Tính toàn vẹn dữ liệu.
+- Quy tắc ngày giờ và múi giờ.
+- Cơ chế tránh mất dữ liệu.
+
+Giao diện mặc định phải đơn giản. Người mới chọn một template dựng sẵn; người
+dùng nâng cao mới mở các tùy chỉnh workflow, metric, horizon và rule.
+
+
+======================================================================
+5. TIMELINE, CALENDAR VÀ REMINDER
+======================================================================
+
+Ba thành phần có nhiệm vụ khác nhau:
+
+- Timeline: Quản lý hướng đi và tiến trình dài hạn.
+- Calendar: Quản lý thời gian thực hiện.
+- Reminder: Quản lý sự chú ý đúng thời điểm.
+
+5.1. Timeline
+
+Timeline dùng cho tầm nhìn, mục tiêu, OKR, cột mốc và dependency. Các chế độ xem
+có thể gồm roadmap, Gantt, goal tree và planned-vs-actual.
+
+Không nên đưa mọi task nhỏ hằng ngày lên timeline.
+
+5.2. Calendar
+
+Các chế độ xem:
+
+- Ngày.
+- Tuần.
+- Tháng.
+- Agenda.
+- Unscheduled tasks.
+
+Các loại calendar entry:
+
+- Event: Sự kiện cố định.
+- Time block: Khoảng thực hiện task.
+- Deadline: Hạn chót.
+- Habit: Hoạt động lặp lại.
+- Milestone: Cột mốc.
+- Review: Phiên đánh giá.
+- Personal: Ăn uống, nghỉ ngơi, gia đình.
+
+Mỗi entry có thể có flexibility:
+
+- fixed: Không tự động di chuyển.
+- flexible: Có thể dời khi người dùng đồng ý.
+- suggested: App có thể đề xuất vị trí phù hợp.
+
+5.3. Sự kiện lặp lại
+
+Không tạo trước vô hạn các bản ghi. Lưu bản ghi gốc, recurrence rule và exception.
+Khi sửa, cho phép chọn:
+
+- Chỉ lần này.
+- Lần này và các lần sau.
+- Toàn bộ chuỗi.
+
+Nên dùng mô hình tương thích RRULE/iCalendar để tránh tự phát minh quy tắc lặp.
+
+5.4. Múi giờ
+
+- Lưu thời điểm chuẩn bằng UTC.
+- Lưu thêm timezone của người dùng, mặc định Asia/Bangkok.
+- Phân biệt giờ địa phương cố định, thời điểm tuyệt đối và all-day event.
+- Supabase Cron xử lý thời gian chuẩn; giao diện chuyển đổi sang múi giờ người dùng.
+
+
+======================================================================
+6. THÔNG BÁO TRÊN WEB, IPHONE VÀ ANDROID
+======================================================================
+
+App được triển khai dưới dạng PWA có service worker và Web Push.
+
+Web Push có thể nhận notification khi app không ở foreground. Trên iPhone/iPad,
+người dùng cần thêm PWA vào Home Screen và chủ động cấp quyền notification.
+
+Luồng kích hoạt trên iPhone:
+
+1. Thêm ứng dụng vào Màn hình chính.
+2. Mở app từ biểu tượng vừa cài.
+3. Nhấn nút "Bật nhắc việc".
+4. Cho phép notification.
+5. App gửi notification thử để xác minh.
+
+Không dùng setTimeout trong trình duyệt làm cơ chế reminder chính vì nó không đáng
+tin khi tab bị đóng hoặc hệ điều hành tạm dừng app.
+
+Một event có thể có nhiều reminder:
+
+- Một ngày trước.
+- Một giờ trước.
+- Đúng giờ.
+- Sau 15 phút nếu chưa xác nhận.
+
+Các hành động notification mong muốn:
+
+- Mở task/event.
+- Đánh dấu hoàn thành.
+- Hoãn 10 phút hoặc một giờ.
+- Dời sang ngày mai.
+
+Không cam kết độ chính xác đến từng giây. Scheduler chạy mỗi phút có thể tạo độ
+trễ ngắn, cộng thêm thời gian chuyển push của trình duyệt/hệ điều hành.
+
+
+======================================================================
+7. QUYỀN RIÊNG TƯ VÀ BẢO MẬT
+======================================================================
+
+Nguyên tắc privacy by design:
+
+- Chỉ thu thập dữ liệu cần thiết.
+- Không quảng cáo và không theo dõi hành vi.
+- Không yêu cầu tên thật, số điện thoại nếu không cần.
+- Không đưa nội dung kế hoạch vào URL hoặc log lỗi.
+- Có chức năng xuất và xóa dữ liệu.
+- Cho phép cấu hình nội dung hiện trên màn hình khóa.
+- Push subscription endpoint và khóa thiết bị là dữ liệu nhạy cảm.
+
+Ba mức nội dung notification:
+
+- Hiện đầy đủ.
+- Hiện tiêu đề chung.
+- Chỉ hiện "Bạn có hoạt động sắp bắt đầu".
+
+Nếu server cần gửi reminder đúng giờ, server ít nhất sẽ biết thời điểm gửi dù nội
+dung được mã hóa. Chính sách quyền riêng tư phải mô tả điều này trung thực.
+
+Authentication:
+
+- Email + password.
+- Email verification.
+- Không dùng SMS OTP để tránh chi phí.
+- Invite-only; tắt đăng ký công khai.
+- Mỗi deployment/database chỉ chấp nhận owner email được mời tương ứng.
+- Cho phép đăng xuất khỏi tất cả thiết bị.
+
+Mỗi user có một Supabase project/PostgreSQL database vật lý riêng, Supabase Auth
+riêng, session riêng và dữ liệu riêng. Không dùng một database chung cho nhiều
+user. Supabase Row Level Security vẫn là lớp phòng vệ bắt buộc; bảng dữ liệu cá
+nhân vẫn giữ owner_user_id để kiểm tra auth.uid(), tránh truy cập sai ngay cả bên
+trong instance của một user.
+
+
+======================================================================
+8. KIẾN TRÚC ĐÃ CHỌN
+======================================================================
+
+Mục tiêu ưu tiên là phát triển nhanh, database và authentication tiện dụng.
+
+Stack đã chọn:
+
+- Frontend/PWA: React hoặc Next.js (chưa chốt framework cụ thể).
+- Hosting frontend: Cloudflare Pages.
+- Database: Supabase PostgreSQL.
+- Authentication: Supabase Auth.
+- Authorization: Supabase Row Level Security trong từng database riêng.
+- Backend: Supabase Edge Functions.
+- Scheduler: Supabase Cron sử dụng pg_cron.
+- Notification: Web Push + Service Worker.
+- Đồng bộ thiết bị: Supabase Realtime khi thực sự cần.
+
+App không tích hợp Google Calendar hoặc Apple Calendar. Supabase là nguồn dữ liệu
+trung tâm cho Goal, Task, Timeline, Calendar, Reminder và Review. Mỗi user có một
+Supabase project/database độc lập; schema và migrations giống nhau giữa các
+instance nhưng dữ liệu, Auth, secrets, push subscriptions và backups không dùng
+chung.
+
+Tên app và quy ước triển khai:
+
+- Product/app name: myplan.
+- Application language: English.
+- Source code language: English.
+- Production web app, iPhone PWA và Android PWA cùng sử dụng myplan online.
+- Không có Local Mode hoặc nút chuyển backend bên trong myplan.
+
+Local deployment đã được thảo luận nhưng không thuộc phạm vi myplan. Nếu sau này
+có một app hoặc instance chạy local trong WSL/Supabase Local, nó phục vụ một mục
+đích khác, có database, authentication, session và dữ liệu hoàn toàn độc lập.
+Không đồng bộ, import, migrate hoặc chia sẻ dữ liệu với myplan. Chỉ tái sử dụng
+code/package chung nếu thực sự có lợi.
+
+
+======================================================================
+9. CƠ CHẾ CRON VÀ REMINDER
+======================================================================
+
+Cron Trigger/Cron Job là đồng hồ báo thức của server. Nó gọi tác vụ backend theo
+chu kỳ ngay cả khi website đóng và không có người dùng online.
+
+Với 1-3 người dùng, chỉ cần một Cron Job chạy mỗi phút:
+
+Cron mỗi phút
+-> tìm reminder pending có scheduled_at <= hiện tại
+-> chuyển sang processing
+-> gọi Edge Function gửi Web Push
+-> thành công: chuyển sang sent
+-> thất bại: ghi lỗi và lên lịch retry
+
+Không tạo cron riêng cho từng user hoặc từng reminder.
+
+Trạng thái reminder:
+
+pending -> processing -> sent
+                    \-> failed -> pending để thử lại
+
+Trường dữ liệu cần thiết:
+
+- scheduled_at
+- status
+- attempt_count
+- processing_at
+- sent_at
+- last_error
+- idempotency_key
+
+Khóa chống gửi trùng có thể hình thành từ reminder_id + scheduled_at. Cron lấy
+reminder theo batch nhỏ và cần index trên status + scheduled_at.
+
+Với 1-3 người dùng, chưa cần Queue ở MVP.
+
+
+======================================================================
+10. CẤU TRÚC DỮ LIỆU NỀN TẢNG DỰ KIẾN
+======================================================================
+
+Các bảng chính:
+
+- profiles
+- goals
+- goal_relations hoặc parent_id trong goals
+- metrics
+- milestones
+- tasks
+- workflows
+- workflow_statuses
+- calendar_entries
+- recurrence_rules
+- recurrence_exceptions
+- reminders
+- push_subscriptions
+- reviews
+- notification_preferences
+
+Hầu hết bảng dữ liệu cá nhân vẫn cần các trường sau để phòng vệ và hỗ trợ audit,
+dù mỗi database chỉ thuộc một user:
+
+- id
+- owner_user_id
+- created_at
+- updated_at
+
+Không tạo CalendarTask, KanbanTask và TimelineTask riêng. Chỉ có một Task và nhiều
+giao diện nhìn vào cùng đối tượng đó:
+
+- Goal cho biết task phục vụ mục tiêu nào.
+- Kanban cho biết task đang ở trạng thái nào.
+- Calendar cho biết khi nào thực hiện.
+- Timeline cho biết task thuộc cột mốc nào.
+- Review cho biết kế hoạch và thực tế khác nhau ra sao.
+
+
+======================================================================
+11. TRẢI NGHIỆM NGƯỜI DÙNG CHÍNH
+======================================================================
+
+Màn hình Today là trung tâm, tổng hợp:
+
+- Timeline trong ngày.
+- Event cố định.
+- Time block.
+- Deadline.
+- Habit.
+- 1-3 việc quan trọng.
+- Khoảng trống còn lại.
+- Tiến độ trong ngày.
+- Daily review.
+
+Notification Center trong app gồm:
+
+- Hoạt động sắp bắt đầu.
+- Deadline sắp đến.
+- Habit chưa thực hiện.
+- Weekly review đến hạn.
+
+Cơ chế chống làm phiền:
+
+- Quiet hours.
+- Không nhắc trong giờ ngủ.
+- Gộp thông báo không khẩn cấp.
+- Giới hạn số notification mỗi ngày.
+- Tắt reminder theo loại hoặc mục tiêu.
+- Phân cấp Critical, Important, Normal và Summary.
+
+Khi một time block kết thúc mà task chưa hoàn thành, app hỏi:
+
+[Hoàn thành] [Làm thêm] [Dời lịch] [Bỏ qua]
+
+Nếu dời lịch, app chỉ đề xuất khoảng trống phù hợp và không tự ý thay đổi event
+cố định. Dữ liệu bỏ lỡ được đưa vào Weekly Review/PDCA.
+
+
+======================================================================
+12. PHẠM VI MVP ĐÃ THỐNG NHẤT
+======================================================================
+
+Nên có:
+
+1. Supabase Auth, tài khoản theo lời mời.
+2. Row Level Security trên toàn bộ dữ liệu cá nhân.
+3. Goal với quan hệ cha-con và horizon tùy chỉnh.
+4. Metric/Key Result và milestone.
+5. Task và Kanban cấu hình được.
+6. Calendar dạng ngày, tuần, tháng, agenda và unscheduled.
+7. Event, time block và deadline là các khái niệm riêng.
+8. Kéo task từ Kanban vào Calendar.
+9. Event lặp và ngoại lệ cơ bản.
+10. Timeline mục tiêu và cột mốc.
+11. Reminder, Supabase Cron, Edge Function và Web Push.
+12. Notification Center, hoãn và dời lịch.
+13. Mức riêng tư cho nội dung notification.
+14. Daily/Weekly Review theo PDCA.
+15. WOOP ngắn cho các mục tiêu quan trọng.
+16. Pomodoro độc lập với thời lượng focus/break cấu hình linh hoạt.
+
+Chưa cần trong MVP:
+
+- Google Calendar hoặc Apple Calendar.
+- Đồng bộ API với app lịch bên ngoài.
+- SMS reminder.
+- Calendar cộng tác và người tham dự.
+- AI tự động thay toàn bộ lịch.
+- Rule engine hoàn chỉnh.
+- Queue nếu chỉ có 1-3 người dùng.
+- Realtime nếu chưa có nhu cầu dùng đồng thời nhiều thiết bị.
+
+
+======================================================================
+13. CÁC RỦI RO VÀ QUYẾT ĐỊNH CHƯA CHỐT
+======================================================================
+
+1. Supabase Free có thể tạm dừng project sau thời gian không hoạt động; khi đó
+   Cron và reminder không chạy. Free tier phù hợp để phát triển/MVP nhưng không
+   nên được coi là hệ thống báo thức có cam kết độ tin cậy tuyệt đối.
+
+   Kiến trúc một database/project vật lý cho mỗi user làm tăng số project cần vận
+   hành. Supabase Free hiện không nên được giả định là đủ cho cả ba instance; cần
+   kiểm tra giới hạn project và chi phí tại thời điểm triển khai. Mỗi instance cần
+   migrations, secrets, cron, backup và monitoring riêng.
+
+2. Cần chốt React SPA hay Next.js trước khi triển khai frontend.
+
+3. Authentication đã chốt: email + password, email verification và invite-only.
+
+4. Cần chốt mức mã hóa phía client. Mã hóa đầu cuối tăng riêng tư nhưng làm tìm
+   kiếm, reminder và khôi phục tài khoản phức tạp hơn.
+
+5. Web Push trên iPhone yêu cầu PWA được thêm vào Home Screen và người dùng cấp
+   quyền. Không thể bảo đảm notification nếu hệ điều hành hoặc người dùng chặn nó.
+
+6. Cần thiết kế retry, logging và chống gửi trùng trước khi coi reminder là ổn định.
+
+7. Local application/instance không phải một chế độ của myplan. Không thiết kế
+   chức năng chuyển Cloud/Local hoặc đồng bộ hai chiều trong myplan.
+
+
+======================================================================
+14. LỘ TRÌNH PHÁT TRIỂN ĐỀ XUẤT
+======================================================================
+
+Giai đoạn 1 - Nền tảng:
+
+- Auth và tài khoản theo lời mời.
+- Database schema.
+- RLS.
+- Goal, Task và Calendar cơ bản.
+
+Giai đoạn 2 - Thực thi:
+
+- Kanban.
+- Time blocking.
+- Timeline.
+- Deadline và recurrence.
+
+Giai đoạn 3 - Nhắc việc:
+
+- PWA và service worker.
+- Push subscription.
+- Reminder scheduler bằng Supabase Cron.
+- Edge Function gửi Web Push.
+- Retry và chống gửi trùng.
+
+Giai đoạn 4 - Kiểm soát và cải tiến:
+
+- OKR/Metric.
+- WOOP.
+- Daily/Weekly Review.
+- PDCA và planned-vs-actual.
+
+Giai đoạn 5 - Linh hoạt nâng cao:
+
+- Custom template.
+- Custom workflow và field.
+- Nhiều cách tính tiến độ.
+- Rule engine và gợi ý tự động.
+
+
+======================================================================
+15. VISUAL DESIGN VÀ COLOR THEMES
+======================================================================
+
+myplan cung cấp đúng bốn color scheme dưới dạng bốn option để người dùng chọn thủ
+công. Mỗi thời điểm chỉ có một scheme được kích hoạt cho toàn bộ giao diện. Tên
+theme, UI labels và source identifiers đều dùng English.
+
+15.1. Jade Pebble Morning
+
+Phong cách: tự nhiên, nhẹ, bình tĩnh; phù hợp sử dụng ban ngày.
+
+Color scheme:
+
+- #7B9669: jade green
+- #6C8480: muted teal gray
+- #BAC8B1: pale sage
+- #E6E6E6: light neutral
+- #404E3B: deep forest
+
+15.2. Sapphire Nightfall Whisper
+
+Phong cách: xanh đậm, tập trung, hiện đại; phù hợp sử dụng ban đêm hoặc deep work.
+
+Color scheme:
+
+- #0474C4: vivid sapphire
+- #5379AE: muted blue
+- #A8C4EC: pale blue
+- #06457F: deep sapphire
+- #2C444C: dark blue teal
+- #262B40: night background
+
+15.3. Ink Wash
+
+Phong cách: đơn sắc, tối giản, trung tính; giảm nhiễu thị giác.
+
+Color scheme:
+
+- #252525: near black
+- #CFCFCF: light gray
+- #7D7D7D: medium gray
+- #545454: dark gray
+
+15.4. Paper White
+
+Phong cách: nền trắng, sạch, sáng và quen thuộc; phù hợp với người dùng muốn giao
+diện light theme tiêu chuẩn và độ tương phản rõ ràng.
+
+Color scheme:
+
+- #FFFFFF: primary background
+- #F7F8FA: secondary surface
+- #E5E7EB: border and divider
+- #111827: primary text
+- #6B7280: secondary text
+- #2563EB: primary action and focus accent
+
+15.5. Theme architecture
+
+Không hard-code mã màu trực tiếp trong React components. Component chỉ sử dụng
+semantic tokens, ví dụ:
+
+- --color-background
+- --color-surface
+- --color-surface-elevated
+- --color-text-primary
+- --color-text-secondary
+- --color-border
+- --color-primary
+- --color-primary-hover
+- --color-accent
+- --color-focus-ring
+- --color-success
+- --color-warning
+- --color-danger
+- --color-calendar-event
+- --color-calendar-time-block
+- --color-timeline-progress
+
+Mỗi theme ánh xạ reference palette vào semantic tokens. Các màu trạng thái như
+success, warning và danger không bị ép lấy trực tiếp từ palette nếu việc đó làm
+mất khả năng nhận biết hoặc không đạt độ tương phản.
+
+Theme selection:
+
+- Settings > Appearance hiển thị đúng bốn option:
+  1. Jade Pebble Morning
+  2. Sapphire Nightfall Whisper
+  3. Ink Wash
+  4. Paper White
+- Người dùng chọn trực tiếp một trong bốn option; toàn bộ app đổi sang scheme đó.
+- Chỉ một option có thể active tại một thời điểm.
+- Lưu preference theo user trên cloud để đồng bộ thiết bị.
+- Có thể cache preference trên thiết bị để tránh nháy sai theme khi app khởi động.
+- Không có System, Auto, Custom hoặc trộn nhiều scheme trong phạm vi đã chốt.
+- Không tự động đổi theme theo giờ hay theo chế độ sáng/tối của thiết bị.
+
+Accessibility requirements:
+
+- Text và interactive controls phải đạt độ tương phản phù hợp WCAG AA.
+- Không dùng màu làm tín hiệu duy nhất; status cần thêm icon, text hoặc pattern.
+- Focus ring phải nhìn rõ trong cả ba theme.
+- Selected, hover, disabled và error states phải được định nghĩa riêng.
+- Charts, timeline và calendar phải phân biệt được khi người dùng giảm khả năng
+  nhận biết màu sắc.
+
+Ba ảnh xác định ba scheme tham chiếu ban đầu, không phải bố cục UI bắt buộc. Paper
+White là scheme thứ tư được bổ sung theo yêu cầu. Khi xây design system, các màu
+trong mỗi scheme phải được ánh xạ vào semantic tokens; chỉ được bổ sung sắc độ phụ
+cần thiết cho hover, focus, disabled và accessibility mà không làm thay đổi nhận
+diện của scheme đã chọn.
+
+
+======================================================================
+16. POMODORO MODULE
+======================================================================
+
+myplan hỗ trợ một chức năng Pomodoro độc lập. Module này được để riêng, không dùng
+chung dữ liệu và không bắt buộc liên kết với Goal, Task, Kanban, Timeline,
+Calendar hoặc Time Block đã bàn ở các phần trước.
+
+16.1. Nguyên tắc tách biệt
+
+- Pomodoro có màn hình hoặc panel riêng.
+- Không yêu cầu chọn task trước khi bắt đầu.
+- Không tự tạo task, time block, calendar entry hoặc reminder.
+- Không tự cập nhật tiến độ Goal/OKR.
+- Không hiển thị Pomodoro session trong Kanban.
+- Lịch sử Pomodoro, nếu bật, nằm trong khu vực Pomodoro riêng.
+- Không thêm task relation vào data model của Pomodoro trong phạm vi đã chốt.
+
+16.2. Flexible timer settings
+
+Người dùng có thể cấu hình linh hoạt:
+
+- Focus duration.
+- Short break duration.
+- Long break duration.
+- Number of focus sessions before a long break.
+- Auto-start breaks: on/off.
+- Auto-start focus sessions: on/off.
+- Sound: on/off và volume.
+- Browser/system notification: on/off.
+
+Preset mặc định có thể là:
+
+- Focus: 25 minutes.
+- Short break: 5 minutes.
+- Long break: 15 minutes.
+- Long break after: 4 focus sessions.
+
+Preset chỉ là giá trị ban đầu; người dùng được phép thay đổi thời lượng. Cần đặt
+giới hạn hợp lý để tránh giá trị bằng 0, âm hoặc quá lớn do nhập sai.
+
+16.3. Timer behavior
+
+Các trạng thái timer:
+
+- Idle
+- Running
+- Paused
+- Completed
+
+Các điều khiển:
+
+- Start
+- Pause
+- Resume
+- Reset
+- Skip
+
+Khi timer chạy, phải lưu started_at, expected_end_at và accumulated_pause_time.
+Không chỉ giảm một biến đếm mỗi giây, vì browser có thể throttle timer khi tab ở
+background. Thời gian còn lại phải được tính lại từ timestamp hiện tại để tránh
+sai lệch lớn khi người dùng đổi tab hoặc khóa màn hình.
+
+Nếu refresh hoặc đóng/mở lại PWA trong lúc timer đang chạy, app cần khôi phục
+trạng thái từ session đang active và tính lại remaining time.
+
+Khi một phiên kết thúc:
+
+- Phát âm thanh nếu được bật.
+- Hiển thị notification nếu có permission.
+- Chuyển sang loại phiên tiếp theo theo cấu hình.
+- Chỉ tự bắt đầu phiên kế tiếp khi auto-start tương ứng được bật.
+
+16.4. Pomodoro data model
+
+Các bảng/đối tượng riêng dự kiến:
+
+- pomodoro_settings
+- pomodoro_sessions
+
+Pomodoro settings có thể gồm:
+
+- owner_user_id
+- focus_minutes
+- short_break_minutes
+- long_break_minutes
+- sessions_before_long_break
+- auto_start_breaks
+- auto_start_focus
+- sound_enabled
+- notification_enabled
+
+Pomodoro session có thể gồm:
+
+- id
+- owner_user_id
+- session_type: focus, short_break hoặc long_break
+- started_at
+- expected_end_at
+- completed_at
+- duration_seconds
+- status: running, paused, completed, skipped hoặc cancelled
+- accumulated_pause_seconds
+- actual_focus_seconds
+
+Không có task_id, goal_id, calendar_entry_id hoặc milestone_id trong phạm vi đã
+chốt. Lịch sử dùng cho thống kê Pomodoro riêng, không dùng để tính tiến độ kế hoạch.
+
+16.5. Daily Focus Time statistics
+
+Pomodoro phải thống kê tổng thời gian tập trung thực tế trong từng ngày.
+
+Cách tính:
+
+- Chỉ cộng thời gian của session_type = focus.
+- Không cộng short break hoặc long break.
+- Không cộng khoảng thời gian timer đang paused.
+- Một focus session dừng sớm vẫn có thể ghi nhận phần thời gian đã thực sự chạy.
+- Không lấy duration cấu hình làm thời gian thực tế; dùng actual_focus_seconds.
+- Ngày được xác định theo timezone của user, mặc định Asia/Bangkok.
+- Session đi qua nửa đêm cần phân bổ thời gian cho đúng từng ngày địa phương.
+
+Ví dụ:
+
+- Focus 25 phút hoàn thành: +25 phút.
+- Focus 25 phút, pause 5 phút rồi hoàn thành: +25 phút, không cộng 5 phút pause.
+- Focus 25 phút nhưng dừng sau 12 phút: +12 phút nếu session đã thực sự chạy.
+- Short break 5 phút: +0 phút focus.
+
+UI thống kê tối thiểu:
+
+- Today: tổng số giờ/phút focus trong ngày.
+- Completed focus sessions today.
+- Optional daily progress ring/bar trong Pomodoro module.
+- Lịch sử theo ngày để xem lại các session tạo nên tổng số.
+
+Giá trị Today có thể cập nhật trực tiếp trong lúc một focus session đang chạy.
+Sau khi session kết thúc, actual_focus_seconds được lưu vào database để tổng hợp.
+Không dùng Daily Focus Time để tự động cập nhật Task, Goal, OKR hoặc Calendar.
+
+16.6. Pomodoro UI
+
+Giao diện dùng English và tuân theo color scheme đang active. Thành phần chính:
+
+- Focus / Short Break / Long Break tabs or state indicator.
+- Large countdown timer.
+- Start/Pause và Reset/Skip controls.
+- Current cycle indicator, ví dụ 2 of 4.
+- Settings shortcut.
+- Today focus time và daily focus-session count trong Pomodoro module.
+
+Pomodoro phải hoạt động giống nhau trên cả bốn scheme: Jade Pebble Morning,
+Sapphire Nightfall Whisper, Ink Wash và Paper White.
+
+
+======================================================================
+17. PRODUCT RULES VÀ QUYẾT ĐỊNH HOÀN THIỆN
+======================================================================
+
+17.1. Primary user flow và navigation
+
+Luồng chính:
+
+Sign In
+-> Today
+-> Create/View Goals
+-> Create Tasks and Checklists
+-> Schedule in Calendar
+-> Receive Reminders
+-> Complete, Reopen or Reschedule
+-> Weekly Review
+
+Primary navigation dùng English:
+
+- Today
+- Goals
+- Tasks
+- Calendar
+- Timeline
+- Pomodoro
+- Reviews
+- Settings
+
+Today là màn hình mặc định sau khi đăng nhập, bao gồm lịch trong ngày, checklist,
+1-3 priorities, deadlines, reminders và trạng thái tổng quan. Pomodoro vẫn là
+module độc lập và không xuất hiện như task trong Today.
+
+17.2. Onboarding
+
+Onboarding lần đầu:
+
+1. Verify email and sign in.
+2. Confirm timezone, mặc định Asia/Bangkok.
+3. Select one of four color schemes.
+4. Configure working hours and quiet hours.
+5. Create the first Goal hoặc skip.
+6. Configure default reminders.
+7. Enable notifications and run a test notification.
+8. Show PWA installation instructions phù hợp thiết bị.
+
+Các bước không thiết yếu có thể skip và hoàn thành lại trong Settings.
+
+17.3. Task priorities, statuses và lifecycle
+
+Priority values:
+
+- Low
+- Medium
+- High
+- Urgent
+
+Task lifecycle/status hỗ trợ:
+
+- Backlog
+- Planned
+- In Progress
+- Blocked
+- Waiting
+- Completed
+- Cancelled
+- Archived
+
+Rules:
+
+- Task quá hạn vẫn giữ nguyên trạng thái; deadline được hiển thị màu đỏ.
+- Không tự động đổi priority hoặc status khi quá hạn.
+- Completed task có thể Reopen và quay lại trạng thái trước đó hoặc Backlog nếu
+  không còn trạng thái trước.
+- Delete là permanent delete sau một confirmation rõ ràng; không có Trash cho Task.
+- Archived không phải deleted và có thể restore.
+- Task hỗ trợ checklist và subtask.
+- Một Task có thể liên kết với nhiều Goals.
+- Checklist item và subtask có trạng thái hoàn thành độc lập.
+- MVP giới hạn subtask ở một cấp để tránh cây lồng quá sâu.
+- Xóa Task phải xử lý rõ checklist, subtasks, time blocks và reminders liên quan;
+  UI phải hiển thị hậu quả trước khi xác nhận.
+
+17.4. Calendar conflict rules
+
+- Cho phép lưu event/time block bị trùng nhưng phải cảnh báo trực quan.
+- Fixed event conflict hiển thị cảnh báo mạnh hơn flexible time block.
+- App không tự ý di chuyển hoặc xóa lịch.
+- Khi drag/drop tạo conflict, người dùng có thể Keep, Move Again hoặc Cancel.
+- Deadline chỉ là mốc thời gian và không tự chiếm một time range.
+- Time block có thể được reschedule mà không làm đổi deadline của Task.
+
+17.5. Search, filters và archive
+
+Global Search tối thiểu tìm được Goals, Tasks và Calendar Entries theo title.
+
+Task filters:
+
+- Status
+- Priority
+- Goal
+- Due date
+- Overdue
+- Archived
+
+Calendar filters:
+
+- Entry type
+- Goal
+- Date range
+- Fixed/Flexible/Suggested
+
+Archive views phải tách khỏi kết quả mặc định nhưng có thể được bật bằng filter.
+
+17.6. Backup, export và recovery
+
+- Mỗi user/database có backup và export độc lập.
+- Hỗ trợ export toàn bộ dữ liệu user dưới dạng versioned JSON.
+- Hỗ trợ CSV cho Tasks, Goals, Calendar Entries và Pomodoro daily statistics.
+- Import/restore phải validate schema version trước khi ghi.
+- Restore không được âm thầm ghi đè dữ liệu hiện có.
+- Có checksum/count verification sau import.
+- Delete Account yêu cầu xác thực lại và xóa database/user instance theo quy trình
+  vận hành riêng; không ảnh hưởng user khác.
+- Vì Task delete là vĩnh viễn, confirmation phải đủ rõ; backup gần nhất là phương
+  án recovery duy nhất sau khi transaction xóa đã hoàn tất.
+
+17.7. Authentication rules
+
+- Email + password.
+- Email verification bắt buộc.
+- Invite-only; public sign-up disabled.
+- Password reset qua verified email.
+- Re-authentication cho hành động nhạy cảm như Delete Account.
+- Có Sign Out và Sign Out All Devices.
+- Rate limit cho sign-in và password reset.
+- Mỗi user có Auth instance/database riêng; không có cross-user account discovery.
+- Mỗi user instance có deployment configuration hoặc hostname riêng trỏ tới đúng
+  Supabase URL và publishable key; frontend không tự dò database bằng email.
+- Service role key, VAPID private key và database credentials hoàn toàn tách biệt
+  giữa các user instance.
+
+17.8. Notification diagnostics và failure handling
+
+Mỗi thiết bị có push subscription riêng trong database của user đó.
+
+Rules:
+
+- Subscription trả về 404/410 được đánh dấu invalid và xóa an toàn.
+- Retry lỗi tạm thời với backoff và giới hạn số lần thử.
+- idempotency_key ngăn một reminder gửi trùng.
+- Một reminder có thể gửi đến tất cả thiết bị active của cùng user.
+- User có thể tắt từng thiết bị trong Settings.
+- Notification Diagnostics hiển thị permission, subscription status, last
+  successful push, last error và nút Send Test Notification.
+- Không tuyên bố Delivered nếu hệ thống chỉ xác nhận đã gửi tới push service.
+
+17.9. Pomodoro multi-device decision
+
+Pomodoro timer là device-local trong MVP:
+
+- Một thiết bị có thể chạy timer riêng.
+- Timer active được lưu local để khôi phục sau refresh/reopen.
+- Khi session kết thúc, kết quả được ghi vào database riêng của user.
+- Không đồng bộ countdown từng giây giữa các thiết bị.
+- Daily Focus Time tổng hợp tất cả session đã ghi nhận từ các thiết bị và chống
+  ghi trùng bằng session id.
+- Âm thanh/notification chỉ phát trên thiết bị đang chạy timer.
+
+17.10. Responsive behavior
+
+- Desktop: sidebar, full calendar, Kanban và timeline đầy đủ.
+- Tablet: collapsible sidebar.
+- Mobile: bottom navigation, Today/Agenda ưu tiên, calendar được tối ưu màn hình nhỏ.
+- Timeline/Gantt có list fallback hoặc horizontal scrolling.
+- Mọi drag-and-drop action phải có menu/button alternative.
+
+17.11. Accessibility
+
+- Keyboard navigation đầy đủ trên desktop.
+- Screen-reader labels cho controls.
+- Hỗ trợ prefers-reduced-motion.
+- Không dùng màu làm tín hiệu duy nhất.
+- Font scaling không làm vỡ chức năng cốt lõi.
+- Pomodoro timer không announce từng giây cho screen reader.
+- Form errors có text rõ ràng và focus management.
+
+17.12. Offline behavior
+
+MVP dùng online-first:
+
+- PWA shell và dữ liệu gần đây có thể được cache để xem.
+- Khi offline, dữ liệu cache ở chế độ read-only.
+- Create/update/delete yêu cầu online.
+- UI hiển thị rõ Offline và không giả vờ đã lưu.
+- Offline editing, sync queue và conflict resolution để giai đoạn sau.
+
+17.13. Audit fields
+
+Các entity chính có:
+
+- created_at
+- updated_at
+- completed_at khi phù hợp
+- archived_at khi phù hợp
+- created_by/updated_by nếu cần cho audit nội bộ
+
+Calendar reschedule và reminder delivery giữ event log tối thiểu để chẩn đoán.
+
+17.14. Technical stack decisions
+
+Chốt stack ưu tiên tính nhất quán và phát triển nhanh:
+
+- Next.js + TypeScript
+- Supabase PostgreSQL/Auth/Edge Functions/Cron
+- TanStack Query cho server state
+- React Hook Form + Zod cho forms và validation
+- date-fns hoặc Luxon; chọn một khi tạo project, không dùng song song
+- FullCalendar cho calendar UI nếu license/feature phù hợp
+- Vitest cho unit/integration tests
+- Playwright cho end-to-end tests
+- PWA service worker cho installability, caching và Web Push
+- Cloudflare Pages cho frontend nếu build/runtime Next.js đã chọn tương thích;
+  nếu không, chọn hosting hỗ trợ Next.js mà không thay đổi database architecture
+
+17.15. MVP acceptance criteria
+
+MVP hoàn thành khi:
+
+- Sign-in, email verification và invite-only hoạt động.
+- Mỗi user chạy trên database/Auth instance riêng; không có dữ liệu dùng chung.
+- Goal, multi-goal Task, checklist và one-level subtask hoạt động.
+- Priority/status rules, reopen, archive và permanent delete hoạt động đúng.
+- Task kéo hoặc thêm vào Calendar thành Time Block được.
+- Calendar conflict chỉ cảnh báo, không tự thay đổi dữ liệu.
+- Reminder không gửi trùng và có diagnostics/retry.
+- Recurrence, exception và timezone hoạt động đúng.
+- Today tổng hợp calendar, checklist, priorities và deadlines.
+- Weekly Review hoạt động theo PDCA.
+- Bốn color schemes hoạt động nhất quán và đạt yêu cầu accessibility.
+- Pomodoro độc lập, flexible và khôi phục sau refresh.
+- Daily Focus Time tính đúng pause, partial session, nhiều thiết bị và qua nửa đêm.
+- Export JSON/CSV và restore validation hoạt động.
+- Mobile có phương án thay thế drag-and-drop.
+- Offline state không làm người dùng hiểu nhầm rằng dữ liệu đã được lưu.
+
+
+======================================================================
+18. KẾT LUẬN
+======================================================================
+
+Kiến trúc được chọn ưu tiên tốc độ phát triển, quyền riêng tư và sự linh hoạt:
+
+Cloudflare Pages + PWA
+        -> Supabase Auth/PostgreSQL/RLS
+        -> Goal/Task/Timeline/Calendar
+        -> Supabase Cron + Edge Function
+        -> Web Push đến iPhone/Android/Desktop
+        -> Review và PDCA để điều chỉnh kế hoạch
+
+Mục tiêu thiết kế cuối cùng:
+
+"Mặc định đơn giản, bên trong linh hoạt; một nguồn dữ liệu duy nhất; biến mục tiêu
+dài hạn thành hành động có lịch, được nhắc đúng lúc và được cải tiến theo kết quả
+thực tế."
+
+Quyết định cuối cùng về định danh sản phẩm:
+
+- Name: myplan
+- App UI: English only
+- Source code and technical identifiers: English only
+- Primary deployment: Online web/PWA backed by Supabase Cloud
+- Local system: Separate purpose and separate data; not part of myplan

@@ -1,0 +1,2 @@
+# WSL runs these files with Bash even when Git checks them out on Windows.
+*.sh text eol=lf
