@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "myplan-push",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "PUSH_SCHEDULER_MODE": "alarms" },
+  "triggers": { "crons": ["* * * * *"] },
+  "durable_objects": {
+    "bindings": [{ "name": "SCHEDULER", "class_name": "PushScheduler" }],
+  },
+  "migrations": [
+    { "tag": "push-scheduler-v1", "new_sqlite_classes": ["PushScheduler"] },
+  ],
+  "queues": {
+    "producers": [{ "binding": "PUSH_QUEUE", "queue": "myplan-push-delivery" }],
+    "consumers": [
+      {
+        "queue": "myplan-push-delivery",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "myplan-push-dead-letter",
+      },
+    ],
+  },
+}
