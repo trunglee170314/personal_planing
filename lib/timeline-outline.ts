@@ -23,18 +23,27 @@ export function buildTimelineRows(
     const id = links.get(task.id);
     return id && activeGoals.has(id) ? id : null;
   };
+  const tasksByGoal = new Map<string | null, Task[]>();
+  const taskGoals = new Map<string, string | null>();
+  for (const task of workspace.tasks) {
+    const goalId = goalOf(task);
+    taskGoals.set(task.id, goalId);
+    const group = tasksByGoal.get(goalId) ?? [];
+    group.push(task);
+    tasksByGoal.set(goalId, group);
+  }
   const byId = new Map(workspace.tasks.map((t) => [t.id, t]));
   const children = new Map<string, Task[]>();
   for (const task of workspace.tasks) {
     const parent = task.parent_task_id && byId.get(task.parent_task_id);
-    if (parent && goalOf(parent) === goalOf(task)) {
+    if (parent && taskGoals.get(parent.id) === taskGoals.get(task.id)) {
       const list = children.get(parent.id) ?? [];
       list.push(task);
       children.set(parent.id, list);
     }
   }
   function appendGroup(goalId: string | null) {
-    const tasks = workspace.tasks.filter((t) => goalOf(t) === goalId),
+    const tasks = tasksByGoal.get(goalId) ?? [],
       ids = new Set(tasks.map((t) => t.id)),
       seen = new Set<string>();
     function append(task: Task) {

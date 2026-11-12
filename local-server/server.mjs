@@ -432,7 +432,12 @@ async function handleRequest(request, response) {
       return send(
         response,
         200,
-        { data: database.getTimelineWorkspace() },
+        {
+          data: database.getTimelineWorkspace({
+            includeChecklistCounts:
+              url.searchParams.get('checklistCounts') !== '0',
+          }),
+        },
         origin,
       );
     if (

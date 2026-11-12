@@ -308,7 +308,10 @@ export interface PlanningRepository {
     nextStart: string,
     nextEnd: string,
   ): Promise<void>;
-  getTimelineWorkspace(): Promise<TimelineWorkspace>;
+  /** The chart does not use checklist counters. Editors retain full counts by default. */
+  getTimelineWorkspace(options?: {
+    includeChecklistCounts?: boolean;
+  }): Promise<TimelineWorkspace>;
   previewTimelineGroup(goalId: string): Promise<TimelineGroupPlan>;
   moveTimelineGroup(
     goalId: string,
@@ -1634,7 +1637,10 @@ class SupabasePlanningRepository implements PlanningRepository {
     });
     assertNoError(result.error);
   }
-  async getTimelineWorkspace() {
+  async getTimelineWorkspace(
+    options: { includeChecklistCounts?: boolean } = {},
+  ) {
+    const includeCounts = options.includeChecklistCounts !== false;
     const [goals, tasks, milestones, checklistRows, rules, occurrenceStates] =
       await Promise.all([
         allRows(
@@ -1668,30 +1674,36 @@ class SupabasePlanningRepository implements PlanningRepository {
             .order('milestone_on')
             .order('id'),
         ),
-        allRows(
-          this.supabase
-            .from('calendar_entries')
-            .select(
-              'id,task_id,title,starts_at,ends_at,all_day,timezone,item_type,completed_at,not_needed_at,notification_offsets,is_pinned,occurrence_mode',
+        includeCounts
+          ? allRows(
+              this.supabase
+                .from('calendar_entries')
+                .select(
+                  'id,task_id,title,starts_at,ends_at,all_day,timezone,item_type,completed_at,not_needed_at,notification_offsets,is_pinned,occurrence_mode',
+                )
+                .eq('item_type', 'checklist')
+                .order('id'),
             )
-            .eq('item_type', 'checklist')
-            .order('id'),
-        ),
-        allRows(
-          this.supabase
-            .from('recurrence_rules')
-            .select('calendar_entry_id,rrule')
-            .order('id'),
-        ),
-        allRows(
-          this.supabase
-            .from('calendar_occurrence_states')
-            .select(
-              'calendar_entry_id,occurrence_start,completed_at,not_needed_at,override_starts_at,override_ends_at,id,title_override,is_exception',
+          : Promise.resolve({ data: [], error: null }),
+        includeCounts
+          ? allRows(
+              this.supabase
+                .from('recurrence_rules')
+                .select('calendar_entry_id,rrule')
+                .order('id'),
             )
-            .order('calendar_entry_id')
-            .order('occurrence_start'),
-        ),
+          : Promise.resolve({ data: [], error: null }),
+        includeCounts
+          ? allRows(
+              this.supabase
+                .from('calendar_occurrence_states')
+                .select(
+                  'calendar_entry_id,occurrence_start,completed_at,not_needed_at,override_starts_at,override_ends_at,id,title_override,is_exception',
+                )
+                .order('calendar_entry_id')
+                .order('occurrence_start'),
+            )
+          : Promise.resolve({ data: [], error: null }),
       ]);
     assertNoError(
       goals.error ||
@@ -2170,8 +2182,10 @@ class LocalPlanningRepository implements PlanningRepository {
       body: JSON.stringify(input),
     });
   }
-  getTimelineWorkspace() {
-    return localRequest<TimelineWorkspace>('/api/timeline');
+  getTimelineWorkspace(options: { includeChecklistCounts?: boolean } = {}) {
+    return localRequest<TimelineWorkspace>(
+      `/api/timeline${options.includeChecklistCounts === false ? '?checklistCounts=0' : ''}`,
+    );
   }
   createTimelineMilestone(input: Omit<TimelineMilestone, 'id'>) {
     return localRequest<string>('/api/timeline/milestones', {

@@ -1,26 +1,6 @@
 'use client';
-import { TaskLink } from '@/components/task-link';
-import { matchesPlanningSearch } from '@/lib/planning-context';
-
-import { RelationSelect } from '@/components/relation-select';
-import { timelineTodayScrollLeft } from '@/lib/planning-viewport';
-import {
-  buildTimelineRows,
-  type TimelineOutlineRow,
-} from '@/lib/timeline-outline';
-import { guardPlanningPointer } from '@/lib/pointer-actions';
-import { openPlanningEditor } from '@/components/planning-editor';
-import {
-  clusterMilestones,
-  milestoneMarkerWidth,
-  MILESTONE_LANE_HEIGHT,
-} from '@/lib/workspace-view';
-import {
-  listHolidays,
-  listAnnotations,
-  type Holiday,
-} from '@/lib/data/workspace-extras';
-
+/* oxlint-disable react/react-compiler -- Pointer capture, virtual focus and frozen drag layouts bridge imperative browser state. */
+/* oxlint-disable jsx-a11y/prefer-tag-over-role -- The focusable resizable separator is an interactive widget, rather than a static hr. */
 import {
   useCallback,
   useEffect,
@@ -33,25 +13,24 @@ import {
   ChevronDown,
   ChevronRight,
   LoaderCircle,
-  Flag as MilestoneIcon,
+  Flag,
   PanelLeftClose,
   PanelLeftOpen,
-  ZoomIn,
-  ZoomOut,
   Star,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { TaskLink } from '@/components/task-link';
+import { openPlanningEditor } from '@/components/planning-editor';
+import { useShortcutActions } from '@/components/keyboard-shortcuts';
 import { addDays, dateKey, daysBetween, shiftDateKey } from '@/lib/calendar';
 import {
   goalColorValue,
-  milestoneColors,
   milestoneColorValue,
   neutralChecklistColor,
 } from '@/lib/colors';
@@ -59,295 +38,676 @@ import {
   getErrorMessage,
   getPlanningRepository,
   type Goal,
-  type GoalColor,
-  type Priority,
   type Task,
+  type TimelineMilestone,
   type TimelineWorkspace,
 } from '@/lib/data/repository';
 import {
-  announceDataChanged as announceWorkspaceChanged,
+  listHolidays,
+  listAnnotations,
+  type Holiday,
+} from '@/lib/data/workspace-extras';
+import {
+  announceDataChanged,
   dataChangeSource,
   MYPLAN_DATA_CHANGED,
 } from '@/lib/data/data-events';
+import { readSettledPlanning } from '@/lib/undo-manager';
+import {
+  buildTimelineRows,
+  type TimelineOutlineRow,
+} from '@/lib/timeline-outline';
+import {
+  buildTimelineLayout,
+  indexTimeline,
+  visibleTimelineRows,
+  timelineTreeGuides,
+  type TaskLayout,
+  type TimelineLayoutRow,
+} from '@/lib/timeline-layout';
+import {
+  TIMELINE_DAY_WIDTHS,
+  TIMELINE_ZOOMS,
+  createTimelineLoadGuard,
+  restoreTimelineEntity,
+  timelineEdgeSpeed,
+  timelineWheelStep,
+  timelineZoomScroll,
+  visibleTimelineLabel,
+  type TimelineZoom,
+} from '@/lib/timeline-interactions';
+import { matchesPlanningSearch } from '@/lib/planning-context';
+import { timelineTodayScrollLeft } from '@/lib/planning-viewport';
+import { guardPlanningPointer } from '@/lib/pointer-actions';
+import { safeTaskLink } from '@/lib/task-links';
+import {
+  milestoneMarkerWidth,
+  type MilestoneCluster,
+} from '@/lib/workspace-view';
 
-type Zoom = 'week' | 'month' | 'quarter' | 'year';
-type Row = TimelineOutlineRow;
-type Draft = {
-  id?: string;
-  kind: 'goal' | 'task' | 'milestone' | null;
-  title: string;
-  start: string;
-  end: string;
-  goalId: string;
-  parentTaskId: string;
-  description?: string;
-  priority?: Priority;
-  statusId?: string;
-  linkUrl?: string;
-  colorKey?: GoalColor | null;
-  important?: boolean;
-};
-type Preview = {
-  kind: 'goal' | 'task' | 'milestone';
+type Kind = 'goal' | 'task' | 'milestone';
+type Plan = { start: string; end: string };
+type Preview = Plan & { kind: Kind; id: string };
+type Drag = Plan & {
+  kind: Kind;
   id: string;
-  start: string;
-  end: string;
-  targetGoal?: string | null;
-  moveDays?: number;
-};
-type Drag = {
-  kind: Preview['kind'];
-  id: string;
-  startX: number;
-  startY?: number;
   pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
   mode: 'move' | 'resize-start' | 'resize-end';
-  start: string;
-  end: string;
   activated: boolean;
   axis?: 'horizontal' | 'vertical';
+  before: Goal | Task | TimelineMilestone;
 };
-
-const dayWidths: Record<Zoom, number> = {
-  week: 46,
-  month: 18,
-  quarter: 8,
-  year: 3,
+type Creation = {
+  row: TimelineLayoutRow;
+  task?: Task;
+  pointerId: number;
+  day: number;
 };
-const minimumDays: Record<Zoom, number> = {
-  week: 56,
-  month: 180,
-  quarter: 540,
-  year: 1095,
+type Selection = { kind: 'goal' | 'task'; id: string };
+const EMPTY: TimelineWorkspace = {
+  goals: [],
+  tasks: [],
+  links: [],
+  milestones: [],
+  statuses: [],
 };
-function latestTimelineDate(workspace: TimelineWorkspace, previous: string) {
-  return [
-    ...workspace.goals.map((goal) => goal.ends_on),
-    ...workspace.tasks.map(deadlineKey),
-    ...workspace.milestones.map((item) => item.milestone_on),
-  ].reduce<string>(
-    (latest, day) => (day && day > latest ? day : latest),
-    previous,
-  );
-}
+const MINIMUM_DAYS = { week: 56, month: 180, quarter: 540, year: 1095 };
+const HEADER_HEIGHT = 48;
 const deadlineKey = (task: Task) =>
   task.due_at?.slice(0, 10) ?? task.planned_end;
-const deadlineIso = (key: string | null) =>
-  key ? new Date(`${key}T23:59:00+07:00`).toISOString() : null;
+const deadlineIso = (day: string) =>
+  new Date(`${day}T23:59:00+07:00`).toISOString();
 
 export function TimelinePanelV2() {
   const repository = getPlanningRepository();
-  const [workspace, setWorkspace] = useState<TimelineWorkspace>({
-    goals: [],
-    tasks: [],
-    links: [],
-    milestones: [],
-    statuses: [],
-  });
-  const [zoom, setZoom] = useState<Zoom>(() => {
-    if (typeof window === 'undefined') return 'month';
-    const saved = window.localStorage.getItem(
-      'myplan-timeline-zoom',
-    ) as Zoom | null;
-    return saved && ['week', 'month', 'quarter', 'year'].includes(saved)
-      ? saved
+  const [workspace, setWorkspace] = useState<TimelineWorkspace>(EMPTY);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+  const [zoom, setZoom] = useState<TimelineZoom>(() => {
+    const saved = readPreference('myplan-timeline-zoom');
+    return TIMELINE_ZOOMS.includes(saved as TimelineZoom)
+      ? (saved as TimelineZoom)
       : 'month';
   });
-  const [outlineOpen, setOutlineOpen] = useState(() =>
-    typeof window === 'undefined'
-      ? true
-      : window.localStorage.getItem('myplan-timeline-outline') !== 'closed',
+  const [outlineOpen, setOutlineOpen] = useState(
+    () => readPreference('myplan-timeline-outline') !== 'closed',
   );
   const [outlineWidth, setOutlineWidth] = useState(() => {
-    if (typeof window === 'undefined') return 240;
-    const saved = Number(
-      window.localStorage.getItem('myplan-timeline-outline-width'),
-    );
-    return Number.isFinite(saved) ? Math.min(360, Math.max(220, saved)) : 240;
+    const saved = Number(readPreference('myplan-timeline-outline-width'));
+    return saved ? Math.min(360, Math.max(220, saved)) : 240;
   });
   const [collapsed, setCollapsed] = useState(new Set<string>());
   const [collapsedTasks, setCollapsedTasks] = useState(new Set<string>());
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState('');
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [milestoneCluster, setMilestoneCluster] = useState<{
-    ids: string[];
-    label: string;
-  } | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [moving, setMoving] = useState(false);
-  const dragRef = useRef<Drag | null>(null);
-  const previewFrameRef = useRef<number | null>(null);
-  const queuedPreviewRef = useRef<Preview | null>(null);
-  const mutationQueuesRef = useRef(new Map<string, Promise<void>>());
-  const mutationVersionsRef = useRef(new Map<string, number>());
-  const mutationEpochRef = useRef(0);
-  const deferredSyncRef = useRef(false);
-  const loadRef = useRef<(() => Promise<void>) | null>(null);
-  const createRef = useRef<{
-    row: Row;
-    startX: number;
-    pointerId: number;
-  } | null>(null);
-  const boardScrollRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState('');
+  const [importantOnly, setImportantOnly] = useState(false);
   const [rangeStart, setRangeStart] = useState<Date | null>(null);
   const [extraDays, setExtraDays] = useState(0);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [dropId, setDropId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [cluster, setCluster] = useState<{
+    items: TimelineMilestone[];
+    label: string;
+  } | null>(null);
+  const [choice, setChoice] = useState<{
+    goalId?: string;
+    taskId?: string;
+    date: string;
+    endDate: string;
+  } | null>(null);
+  const [viewport, setViewport] = useState({
+    left: 0,
+    top: 0,
+    width: 1600,
+    height: 600,
+  });
+  const boardRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<Drag | null>(null);
+  const creationRef = useRef<Creation | null>(null);
+  const busyRef = useRef(false);
+  const frozenRef = useRef<TimelineWorkspace | null>(null);
+  const pinnedRowRef = useRef<string | null>(null);
+  const pendingFocus = useRef<string | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const viewportFrameRef = useRef<number | null>(null);
+  const edgeFrameRef = useRef<number | null>(null);
+  const pointerRef = useRef({ x: 0, y: 0 });
+  const guardRef = useRef(createTimelineLoadGuard());
   const noteRequests = useRef(new Set<string>());
-  const [viewport, setViewport] = useState({ left: 0, width: 1600 });
-  const previousScrollLeft = useRef(0);
-  const positionedAtToday = useRef(false);
-  const pendingScrollShift = useRef<number | null>(null);
-  const [latestSeen, setLatestSeen] = useState(dateKey(new Date()));
-  const syncSourceRef = useRef('timeline');
-  const outlineResizeRef = useRef<{
+  const noteRevision = useRef(0);
+  const mountedRef = useRef(false);
+  const readingRef = useRef(0);
+  const cancelRef = useRef<() => void>(() => {});
+  const holidayCache = useRef<Promise<Holiday[] | null> | null>(null);
+  const deferredLoad = useRef(false);
+  const loadRef = useRef<() => Promise<void>>(async () => {});
+  const positioned = useRef(false);
+  const pendingScroll = useRef<number | null>(null);
+  const resizeRef = useRef<{
     pointerId: number;
-    startX: number;
+    x: number;
     width: number;
   } | null>(null);
 
   const load = useCallback(async () => {
-    if (!repository) return;
-    const startedAtEpoch = mutationEpochRef.current;
+    if (!repository) {
+      setLoading(false);
+      return;
+    }
+    if (busyRef.current || dragRef.current || creationRef.current) {
+      deferredLoad.current = true;
+      return;
+    }
+    const current = guardRef.current.begin();
+    readingRef.current++;
     try {
-      const next = await repository.getTimelineWorkspace();
-      if (
-        startedAtEpoch !== mutationEpochRef.current ||
-        mutationQueuesRef.current.size > 0
-      ) {
-        deferredSyncRef.current = true;
+      holidayCache.current ??= listHolidays().catch(() => {
+        holidayCache.current = null;
+        return null;
+      });
+      void holidayCache.current.then((daysOff) => {
+        if (daysOff && current()) setHolidays(daysOff);
+      });
+      const next = await readSettledPlanning(() =>
+        repository.getTimelineWorkspace({ includeChecklistCounts: false }),
+      );
+      if (!current()) return;
+      if (busyRef.current || dragRef.current || creationRef.current) {
+        deferredLoad.current = true;
         return;
       }
-      setRangeStart((current) => current ?? timelineRangeStart(next));
-      setLatestSeen((current) => latestTimelineDate(next, current));
+      const earliest = timelineRangeStart(next);
+      setRangeStart((old) => {
+        if (!old || earliest >= old) return old ?? earliest;
+        pendingScroll.current =
+          (boardRef.current?.scrollLeft ?? 0) +
+          daysBetween(dateKey(earliest), dateKey(old)) *
+            TIMELINE_DAY_WIDTHS[zoom];
+        return earliest;
+      });
       setWorkspace(next);
-      setNotes({});
-      noteRequests.current.clear();
-      setHolidays(await listHolidays());
+      setMessage('');
     } catch (error) {
-      setMessage(getErrorMessage(error));
+      if (current()) setMessage(getErrorMessage(error));
     } finally {
-      setLoading(false);
+      readingRef.current--;
+      if (current()) setLoading(false);
     }
-  }, [repository]);
-  useEffect(() => {
+  }, [repository, zoom]);
+  useLayoutEffect(() => {
     loadRef.current = load;
   }, [load]);
-
-  function announceDataChanged() {
-    announceWorkspaceChanged(syncSourceRef.current);
-  }
-  function nextMutationVersion(key: string) {
-    mutationEpochRef.current += 1;
-    const version = (mutationVersionsRef.current.get(key) ?? 0) + 1;
-    mutationVersionsRef.current.set(key, version);
-    return version;
-  }
-  async function enqueueMutation(key: string, action: () => Promise<void>) {
-    const previous = mutationQueuesRef.current.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(action);
-    mutationQueuesRef.current.set(key, current);
-    try {
-      await current;
-    } finally {
-      if (mutationQueuesRef.current.get(key) === current)
-        mutationQueuesRef.current.delete(key);
-      if (mutationQueuesRef.current.size === 0 && deferredSyncRef.current) {
-        deferredSyncRef.current = false;
-        void loadRef.current?.();
-      }
-    }
-  }
   useEffect(() => {
-    const handle = window.setTimeout(() => void load(), 0);
+    const loadGuard = createTimelineLoadGuard();
+    guardRef.current = loadGuard;
+    mountedRef.current = true;
+    const invalidateNotes = () => {
+      noteRevision.current++;
+    };
+    const timer = window.setTimeout(() => void loadRef.current(), 0);
     const sync = (event: Event) => {
-      if (dataChangeSource(event) === syncSourceRef.current) return;
-      if (mutationQueuesRef.current.size > 0) {
-        deferredSyncRef.current = true;
-        return;
+      const source = dataChangeSource(event);
+      if (source === 'timeline') return;
+      guardRef.current.invalidate();
+      if ((dragRef.current || creationRef.current) && !busyRef.current) {
+        deferredLoad.current = false;
+        cancelRef.current();
       }
-      void load();
+      if (source === 'holidays') holidayCache.current = null;
+      if (source === 'annotations') {
+        noteRevision.current++;
+        setNotes({});
+        noteRequests.current.clear();
+      }
+      void loadRef.current();
+    };
+    const focus = () => {
+      if (document.visibilityState === 'visible') void loadRef.current();
+    };
+    const blur = () => {
+      if (!busyRef.current && (dragRef.current || creationRef.current))
+        cancelRef.current();
     };
     window.addEventListener(MYPLAN_DATA_CHANGED, sync);
+    window.addEventListener('focus', focus);
+    window.addEventListener('blur', blur);
+    document.addEventListener('visibilitychange', focus);
     return () => {
-      window.clearTimeout(handle);
+      window.clearTimeout(timer);
+      loadGuard.dispose();
+      mountedRef.current = false;
+      invalidateNotes();
       window.removeEventListener(MYPLAN_DATA_CHANGED, sync);
-      if (previewFrameRef.current !== null)
-        window.cancelAnimationFrame(previewFrameRef.current);
+      window.removeEventListener('focus', focus);
+      window.removeEventListener('blur', blur);
+      document.removeEventListener('visibilitychange', focus);
+      for (const ref of [frameRef, viewportFrameRef, edgeFrameRef])
+        if (ref.current !== null) window.cancelAnimationFrame(ref.current);
     };
-  }, [load]);
+  }, [repository]);
   useEffect(() => {
-    window.localStorage.setItem('myplan-timeline-zoom', zoom);
+    writePreference('myplan-timeline-zoom', zoom);
   }, [zoom]);
   useEffect(() => {
-    window.localStorage.setItem(
-      'myplan-timeline-outline',
-      outlineOpen ? 'open' : 'closed',
-    );
+    writePreference('myplan-timeline-outline', outlineOpen ? 'open' : 'closed');
   }, [outlineOpen]);
   useEffect(() => {
-    window.localStorage.setItem(
-      'myplan-timeline-outline-width',
-      String(outlineWidth),
-    );
+    writePreference('myplan-timeline-outline-width', String(outlineWidth));
   }, [outlineWidth]);
 
-  const linkMap = useMemo(
-    () => new Map(workspace.links.map((link) => [link.task_id, link.goal_id])),
-    [workspace.links],
+  const layoutWorkspace = frozenRef.current ?? workspace;
+  const index = useMemo(
+    () => indexTimeline(layoutWorkspace, importantOnly),
+    [layoutWorkspace, importantOnly],
   );
-  const [query, setQuery] = useState('');
-  const [importantOnly, setImportantOnly] = useState(false);
-  const rows = useMemo(
+  const links = useMemo(
+    () =>
+      new Map(
+        layoutWorkspace.links.map((link) => [link.task_id, link.goal_id]),
+      ),
+    [layoutWorkspace.links],
+  );
+  const outlineRows = useMemo(
     () =>
       filterTimelineRows(
         buildTimelineRows(
-          workspace,
-          linkMap,
+          layoutWorkspace,
+          links,
           query.trim() ? new Set() : collapsed,
           query.trim() ? new Set() : collapsedTasks,
         ),
-        workspace,
+        layoutWorkspace,
         query,
       ),
-    [collapsed, collapsedTasks, linkMap, workspace, query],
+    [layoutWorkspace, links, collapsed, collapsedTasks, query],
   );
-  const range = makeTimelineRange(
-    rangeStart ?? timelineRangeStart(workspace),
-    workspace,
-    latestSeen,
-    zoom,
-    extraDays,
+  const origin = useMemo(
+    () => rangeStart ?? timelineRangeStart(layoutWorkspace),
+    [rangeStart, layoutWorkspace],
   );
-  const dayWidth = dayWidths[zoom];
-  const chartWidth = range.days * dayWidth;
-  const visibleDayStart = Math.max(
-    0,
-    Math.floor(viewport.left / dayWidth) - 30,
+  const originKey = dateKey(origin),
+    dayWidth = TIMELINE_DAY_WIDTHS[zoom];
+  const rangeDays = useMemo(
+    () =>
+      Math.min(
+        daysBetween(originKey, '2201-01-01'),
+        Math.max(
+          MINIMUM_DAYS[zoom],
+          daysBetween(originKey, latestTimelineDate(layoutWorkspace)) + 30,
+        ) + extraDays,
+      ),
+    [originKey, layoutWorkspace, zoom, extraDays],
   );
-  const visibleDayEnd = Math.min(
-    range.days,
-    Math.ceil((viewport.left + viewport.width) / dayWidth) + 30,
+  const chartWidth = rangeDays * dayWidth;
+  const layout = useMemo(
+    () =>
+      buildTimelineLayout(
+        outlineRows,
+        index,
+        originKey,
+        dayWidth,
+        !outlineOpen,
+      ),
+    [outlineRows, index, originKey, dayWidth, outlineOpen],
   );
-  const visibleDays = Array.from(
-    { length: Math.max(0, visibleDayEnd - visibleDayStart) },
-    (_, index) => visibleDayStart + index,
+  const goalPlans = useMemo(() => {
+    const plans = new Map<
+      string,
+      { start: string | null; end: string | null }
+    >();
+    for (const goal of layoutWorkspace.goals)
+      plans.set(goal.id, { start: goal.starts_on, end: goal.ends_on });
+    for (const task of layoutWorkspace.tasks) {
+      const id = links.get(task.id);
+      if (!id) continue;
+      const goal = index.goalsById.get(id),
+        plan = plans.get(id);
+      if (!goal || !plan || (goal.starts_on && goal.ends_on)) continue;
+      if (
+        task.planned_start &&
+        (!plan.start || task.planned_start < plan.start)
+      )
+        plan.start = task.planned_start;
+      const end = deadlineKey(task);
+      if (end && (!plan.end || end > plan.end)) plan.end = end;
+    }
+    return plans;
+  }, [layoutWorkspace, links, index.goalsById]);
+  const tree = useMemo(() => timelineTreeGuides(outlineRows), [outlineRows]);
+  const visibleWindow = visibleTimelineRows(
+    layout.rows,
+    viewport.top,
+    viewport.height - HEADER_HEIGHT,
   );
-  useEffect(() => {
-    const board = boardScrollRef.current;
-    if (!board) return;
-    const observer = new ResizeObserver(() =>
-      setViewport({ left: board.scrollLeft, width: board.clientWidth }),
+  const rowByItem = useMemo(() => {
+    const map = new Map<string, TimelineLayoutRow>();
+    for (const row of layout.rows) {
+      if (row.goal) map.set(`goal:${row.goal.id}`, row);
+      for (const task of row.tasks) {
+        map.set(`task:${task.row.task.id}`, row);
+        for (const marker of task.milestones)
+          map.set(`milestone:${marker.id}`, row);
+      }
+      if (row.goal)
+        for (const marker of row.milestones)
+          map.set(`milestone:${marker.id}`, row);
+    }
+    return map;
+  }, [layout.rows]);
+  const renderedRows = useMemo(() => {
+    const result = new Map(
+      layout.rows
+        .slice(visibleWindow.start, visibleWindow.end)
+        .map((row) => [row.key, row]),
     );
+    const pinned = pinnedRowRef.current;
+    if (pinned) {
+      const row = layout.rows.find((item) => item.key === pinned);
+      if (row) result.set(pinned, row);
+    }
+    if (selection) {
+      const row = rowByItem.get(`${selection.kind}:${selection.id}`);
+      if (row) result.set(row.key, row);
+    }
+    return [...result.values()].sort((a, b) => a.top - b.top);
+  }, [
+    layout.rows,
+    visibleWindow.start,
+    visibleWindow.end,
+    selection,
+    rowByItem,
+  ]);
+  const navigation = useMemo(
+    () =>
+      layout.rows.flatMap<Selection>((row) =>
+        row.goal
+          ? [{ kind: 'goal' as const, id: row.goal.id }]
+          : row.tasks.map((task) => ({
+              kind: 'task' as const,
+              id: task.row.task.id,
+            })),
+      ),
+    [layout.rows],
+  );
+
+  function updateViewport() {
+    const board = boardRef.current;
+    if (!board) return;
+    const next = {
+      left: board.scrollLeft,
+      top: board.scrollTop,
+      width: board.clientWidth,
+      height: board.clientHeight,
+    };
+    setViewport((old) =>
+      old.left === next.left &&
+      old.top === next.top &&
+      old.width === next.width &&
+      old.height === next.height
+        ? old
+        : next,
+    );
+  }
+  function queueViewport() {
+    if (viewportFrameRef.current !== null) return;
+    viewportFrameRef.current = window.requestAnimationFrame(() => {
+      viewportFrameRef.current = null;
+      updateViewport();
+    });
+  }
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    const observer = new ResizeObserver(queueViewport);
     observer.observe(board);
+    queueViewport();
     return () => observer.disconnect();
   }, [loading]);
+  useLayoutEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    if (pendingScroll.current !== null) {
+      board.scrollLeft = pendingScroll.current;
+      pendingScroll.current = null;
+      updateViewport();
+    }
+    if (!loading && !positioned.current) {
+      positioned.current = true;
+      board.scrollLeft = timelineTodayScrollLeft(
+        daysBetween(originKey, dateKey(new Date())) * dayWidth,
+        board.clientWidth,
+        outlineOpen ? outlineWidth : 0,
+      );
+      updateViewport();
+    }
+    const maximum = Math.max(
+      0,
+      layout.totalHeight + HEADER_HEIGHT - board.clientHeight,
+    );
+    if (board.scrollTop > maximum) {
+      board.scrollTop = maximum;
+      updateViewport();
+    }
+  }, [
+    loading,
+    originKey,
+    dayWidth,
+    outlineOpen,
+    outlineWidth,
+    layout.totalHeight,
+  ]);
+  useLayoutEffect(() => {
+    if (!pendingFocus.current) return;
+    const element = boardRef.current?.querySelector<HTMLElement>(
+      `[data-timeline-focus="${pendingFocus.current}"]`,
+    );
+    if (element) {
+      element.focus({ preventScroll: true });
+      pendingFocus.current = null;
+    }
+  }, [selection, renderedRows, outlineOpen]);
+  function extendEarlier() {
+    const count = Math.min(90, daysBetween('2000-01-01', originKey));
+    if (count <= 0) return;
+    pendingScroll.current =
+      (boardRef.current?.scrollLeft ?? 0) + count * dayWidth;
+    setRangeStart(addDays(origin, -count));
+  }
+  function extendLater() {
+    if (rangeDays < daysBetween(originKey, '2201-01-01'))
+      setExtraDays((value) => value + 90);
+  }
+  function goToday() {
+    const board = boardRef.current;
+    if (!board) return;
+    board.scrollLeft = timelineTodayScrollLeft(
+      daysBetween(originKey, dateKey(new Date())) * dayWidth,
+      board.clientWidth,
+      outlineOpen ? outlineWidth : 0,
+    );
+    queueViewport();
+  }
+  function changeZoom(next: TimelineZoom, clientX?: number) {
+    if (
+      next === zoom ||
+      dragRef.current ||
+      creationRef.current ||
+      busyRef.current
+    )
+      return;
+    const board = boardRef.current;
+    if (board) {
+      const outline = outlineOpen ? outlineWidth : 0;
+      pendingScroll.current = timelineZoomScroll(
+        board.scrollLeft,
+        clientX === undefined
+          ? outline + (board.clientWidth - outline) / 2
+          : clientX - board.getBoundingClientRect().left,
+        outline,
+        dayWidth,
+        TIMELINE_DAY_WIDTHS[next],
+      );
+    }
+    setZoom(next);
+  }
+  const wheelRuntime = useRef({ zoom, changeZoom });
+  useLayoutEffect(() => {
+    wheelRuntime.current = { zoom, changeZoom };
+  });
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    let wheel = { delta: 0, time: 0 };
+    const listener = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const now = performance.now();
+      const result = timelineWheelStep(
+        wheel,
+        event.deltaY,
+        event.deltaMode,
+        now,
+      );
+      wheel = result.state;
+      if (!result.step) return;
+      const runtime = wheelRuntime.current;
+      runtime.changeZoom(
+        TIMELINE_ZOOMS[
+          Math.max(
+            0,
+            Math.min(
+              TIMELINE_ZOOMS.length - 1,
+              TIMELINE_ZOOMS.indexOf(runtime.zoom) + result.step,
+            ),
+          )
+        ],
+        event.clientX,
+      );
+    };
+    board.addEventListener('wheel', listener, { passive: false });
+    return () => board.removeEventListener('wheel', listener);
+  }, [loading]);
+
+  function toggleGoal(id: string) {
+    setCollapsed((old) => toggleSet(old, id));
+  }
+  function toggleTask(id: string) {
+    setCollapsedTasks((old) => toggleSet(old, id));
+  }
+  function selectRelative(direction: number) {
+    const current = selection
+      ? navigation.findIndex(
+          (item) => item.id === selection.id && item.kind === selection.kind,
+        )
+      : -1;
+    const next =
+      navigation[
+        Math.max(
+          0,
+          Math.min(
+            navigation.length - 1,
+            current < 0 ? 0 : current + direction,
+          ),
+        )
+      ];
+    if (!next) return;
+    const row = rowByItem.get(`${next.kind}:${next.id}`),
+      board = boardRef.current;
+    if (row && board) {
+      if (row.top < board.scrollTop) board.scrollTop = row.top;
+      else if (
+        row.top + row.height >
+        board.scrollTop + board.clientHeight - HEADER_HEIGHT
+      )
+        board.scrollTop =
+          row.top + row.height + HEADER_HEIGHT - board.clientHeight;
+      const task = row.tasks.find((item) => item.row.task.id === next.id);
+      if (
+        !outlineOpen &&
+        task &&
+        (task.left + task.width < board.scrollLeft ||
+          task.left > board.scrollLeft + board.clientWidth)
+      )
+        board.scrollLeft = task.left;
+      queueViewport();
+    }
+    pendingFocus.current = `${next.kind}:${next.id}`;
+    setSelection(next);
+  }
+  const selectedTask =
+    selection?.kind === 'task' ? index.tasksById.get(selection.id) : undefined;
+  useShortcutActions({
+    selectPrevious: {
+      enabled: () => !moving && !dragging && navigation.length > 0,
+      run: () => selectRelative(-1),
+    },
+    selectNext: {
+      enabled: () => !moving && !dragging && navigation.length > 0,
+      run: () => selectRelative(1),
+    },
+    edit: {
+      enabled: () =>
+        !moving &&
+        !dragging &&
+        !!selection &&
+        selection.id !== 'inbox' &&
+        rowByItem.has(`${selection.kind}:${selection.id}`),
+      run: () => {
+        if (selection) openPlanningEditor(selection);
+      },
+    },
+    openLink: {
+      enabled: () =>
+        !moving &&
+        !dragging &&
+        !!selection &&
+        rowByItem.has(`task:${selection.id}`) &&
+        !!safeTaskLink(selectedTask),
+      run: () => {
+        const url = safeTaskLink(selectedTask);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      },
+    },
+    collapse: {
+      enabled: () =>
+        !moving &&
+        !dragging &&
+        !query.trim() &&
+        !!selection &&
+        (selection.kind === 'goal' ||
+          (outlineOpen &&
+            (layout.plansByTaskId.get(selection.id)?.row.hasChildren ??
+              false))),
+      run: () => {
+        if (selection?.kind === 'goal') toggleGoal(selection.id);
+        else if (selection) toggleTask(selection.id);
+      },
+    },
+    create: {
+      enabled: () => !moving && !dragging,
+      run: () => openPlanningEditor({ kind: 'milestone' }),
+    },
+    previous: { enabled: () => !moving && !dragging, run: extendEarlier },
+    next: { enabled: () => !moving && !dragging, run: extendLater },
+    today: { enabled: () => !moving && !dragging, run: goToday },
+    cancel: { enabled: () => dragging && !moving, run: () => cancelGesture() },
+  });
+
   function milestoneNotes(id: string) {
     if (noteRequests.current.has(id)) return;
     noteRequests.current.add(id);
+    const revision = noteRevision.current;
     void listAnnotations({ kind: 'milestone', id })
-      .then((items) =>
+      .then((items) => {
+        if (!mountedRef.current || revision !== noteRevision.current) return;
         setNotes((old) => ({
           ...old,
           [id]: items
@@ -355,96 +715,62 @@ export function TimelinePanelV2() {
             .slice(-3)
             .map((item) => item.body)
             .join('\n'),
-        })),
-      )
+        }));
+      })
       .catch(() => {
-        noteRequests.current.delete(id);
+        if (revision === noteRevision.current) noteRequests.current.delete(id);
       });
   }
-  useLayoutEffect(() => {
-    if (pendingScrollShift.current !== null && boardScrollRef.current) {
-      boardScrollRef.current.scrollLeft = pendingScrollShift.current;
-      pendingScrollShift.current = null;
-    }
-  }, [rangeStart, extraDays]);
-  useLayoutEffect(() => {
-    const board = boardScrollRef.current;
-    if (loading || !rangeStart || !board || positionedAtToday.current) return;
-    positionedAtToday.current = true;
-    board.scrollLeft = timelineTodayScrollLeft(
-      daysBetween(dateKey(range.start), dateKey(new Date())) * dayWidth,
-      board.clientWidth,
-      outlineOpen ? outlineWidth : 0,
-    );
-    previousScrollLeft.current = board.scrollLeft;
-    setViewport({ left: board.scrollLeft, width: board.clientWidth });
-  }, [loading, rangeStart, range.start, dayWidth, outlineOpen, outlineWidth]);
-  function extendEarlier() {
-    const amount = Math.min(
-      90,
-      daysBetween('2000-01-01', dateKey(range.start)),
-    );
-    if (amount <= 0) return;
-    pendingScrollShift.current =
-      (boardScrollRef.current?.scrollLeft ?? 0) + amount * dayWidth;
-    setRangeStart((current) => addDays(current ?? range.start, -amount));
+  function beginGesture(row: TimelineLayoutRow) {
+    if (readingRef.current > 0) deferredLoad.current = true;
+    guardRef.current.invalidate();
+    frozenRef.current = workspace;
+    pinnedRowRef.current = row.key;
+    setDragging(true);
+    setMessage('');
   }
-  function extendLater() {
-    if (range.days < daysBetween(dateKey(range.start), '2201-01-01'))
-      setExtraDays((value) => value + 90);
+  function startDrag(
+    event: React.PointerEvent<HTMLElement>,
+    row: TimelineLayoutRow,
+    kind: Kind,
+    id: string,
+    plan: Plan,
+    mode: Drag['mode'],
+  ) {
+    if (busyRef.current || dragRef.current || creationRef.current) return;
+    const before =
+      kind === 'task'
+        ? index.tasksById.get(id)
+        : kind === 'goal'
+          ? index.goalsById.get(id)
+          : workspace.milestones.find((item) => item.id === id);
+    if (!before) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    beginGesture(row);
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    dragRef.current = {
+      ...plan,
+      kind,
+      id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: boardRef.current?.scrollLeft ?? 0,
+      mode,
+      activated: false,
+      before,
+    };
   }
-  function rowMilestones(row: Row) {
-    return workspace.milestones.filter(
-      (item) =>
-        (!importantOnly || item.is_important) &&
-        (row.kind === 'task'
-          ? item.task_id === row.task.id
-          : !item.task_id &&
-            item.goal_id === (row.goal.id === 'inbox' ? null : row.goal.id)),
-    );
-  }
-  function rowHeight(row: Row) {
-    return (
-      (row.kind === 'goal' ? 56 : 42) +
-      (rowMilestones(row).length ? MILESTONE_LANE_HEIGHT : 0)
-    );
-  }
-
-  function rangeForGoal(goal: Goal) {
-    if (goal.starts_on && goal.ends_on)
-      return { start: goal.starts_on, end: goal.ends_on };
-    const children = workspace.tasks.filter(
-      (task) => linkMap.get(task.id) === goal.id,
-    );
-    const starts = [
-      goal.starts_on,
-      ...children.map((task) => task.planned_start),
-    ]
-      .filter(Boolean)
-      .sort((a, b) => String(a).localeCompare(String(b))) as string[];
-    const ends = [goal.ends_on, ...children.map(deadlineKey)]
-      .filter(Boolean)
-      .sort((a, b) => String(a).localeCompare(String(b))) as string[];
-    return { start: starts[0] ?? null, end: ends.at(-1) ?? null };
-  }
-  function entityPlan(row: Row) {
-    const base =
-      row.kind === 'goal'
-        ? rangeForGoal(row.goal)
-        : { start: row.task.planned_start, end: deadlineKey(row.task) };
-    if (
-      preview &&
-      preview.id === (row.kind === 'goal' ? row.goal.id : row.task.id) &&
-      preview.kind === row.kind
-    )
-      return { start: preview.start, end: preview.end };
-    return base;
-  }
-  function dragPlan(state: Drag, clientX: number) {
-    const delta = Math.round((clientX - state.startX) / dayWidth);
-    let start = state.start;
-    let end = state.end;
-    if (state.mode === 'move') {
+  function dragPlan(state: Drag): Preview {
+    const dx =
+      pointerRef.current.x -
+      state.startX +
+      (boardRef.current?.scrollLeft ?? 0) -
+      state.scrollLeft;
+    const delta = Math.round(dx / dayWidth);
+    let { start, end } = state;
+    if (state.mode === 'move' && state.axis !== 'vertical') {
       start = shiftDateKey(start, delta);
       end = shiftDateKey(end, delta);
     }
@@ -452,1649 +778,1135 @@ export function TimelinePanelV2() {
       start = shiftDateKey(start, Math.min(delta, daysBetween(start, end)));
     if (state.mode === 'resize-end')
       end = shiftDateKey(end, Math.max(delta, -daysBetween(start, end)));
-    return {
-      kind: state.kind,
-      id: state.id,
-      start,
-      end,
-      moveDays: state.mode === 'move' ? delta : undefined,
-    } as Preview;
+    return { kind: state.kind, id: state.id, start, end };
   }
-  function pointerMove(event: React.PointerEvent) {
-    if (!dragRef.current || event.pointerId !== dragRef.current.pointerId)
-      return;
+  function findDropTarget() {
+    return (
+      document
+        .elementFromPoint(pointerRef.current.x, pointerRef.current.y)
+        ?.closest<HTMLElement>('[data-timeline-drop]') ?? null
+    );
+  }
+  function updatePreview() {
     const state = dragRef.current;
-    if (!state.activated) {
-      const distance = Math.max(
-        Math.abs(event.clientX - state.startX),
-        state.startY === undefined ? 0 : Math.abs(event.clientY - state.startY),
-      );
-      if (distance < 4) return;
-      state.activated = true;
-      state.axis =
-        state.mode === 'move' && state.kind !== 'milestone'
-          ? Math.abs(event.clientY - (state.startY ?? event.clientY)) >
-            Math.abs(event.clientX - state.startX)
-            ? 'vertical'
-            : 'horizontal'
-          : 'horizontal';
-    }
-    queuedPreviewRef.current =
+    if (!state?.activated) return;
+    const next = dragPlan(state);
+    setPreview((old) =>
+      old?.id === next.id &&
+      old.kind === next.kind &&
+      old.start === next.start &&
+      old.end === next.end
+        ? old
+        : next,
+    );
+    setDropId(
       state.axis === 'vertical'
-        ? { kind: state.kind, id: state.id, start: state.start, end: state.end }
-        : dragPlan(state, event.clientX);
-    if (previewFrameRef.current !== null) return;
-    previewFrameRef.current = window.requestAnimationFrame(() => {
-      setPreview(queuedPreviewRef.current);
-      queuedPreviewRef.current = null;
-      previewFrameRef.current = null;
+        ? (findDropTarget()?.dataset.timelineDrop ?? null)
+        : null,
+    );
+  }
+  function queuePreview() {
+    if (frameRef.current !== null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      updatePreview();
     });
   }
-  function clearQueuedPreview() {
-    queuedPreviewRef.current = null;
-    if (previewFrameRef.current !== null) {
-      window.cancelAnimationFrame(previewFrameRef.current);
-      previewFrameRef.current = null;
-    }
-  }
-  function dropTarget(x: number, y: number) {
-    const row = document
-      .elementFromPoint(x, y)
-      ?.closest<HTMLElement>('[data-timeline-kind]');
-    return row
-      ? {
-          kind: row.dataset.timelineKind as 'goal' | 'task',
-          id: row.dataset.timelineId || null,
-          goalId: row.dataset.timelineGoal || null,
-        }
-      : null;
-  }
-  async function finishMove(
-    state: Drag,
-    next: Preview,
-    targetGoal: string | null | undefined,
-  ) {
-    if (!repository || moving) return;
-    const days = daysBetween(state.start, next.start);
-    const task = workspace.tasks.find((item) => item.id === state.id);
-    const oldGoal = linkMap.get(state.id) ?? null;
-    const nextGoal = targetGoal === undefined ? oldGoal : targetGoal;
-    if (!days && (state.kind !== 'task' || nextGoal === oldGoal)) return;
-    setMoving(true);
-    setMessage('');
-    try {
-      if (state.kind === 'goal') {
-        await enqueueMutation(`goal:${state.id}`, () =>
-          repository.updateGoal(state.id, {
-            starts_on: next.start,
-            ends_on: next.end,
-          }),
-        );
-      } else if (task) {
-        await enqueueMutation(`task:${state.id}`, () =>
-          repository.moveTimelineTask(state.id, {
-            days,
-            goal_id: oldGoal,
-            expected_goal: oldGoal,
-            expected_parent: task.parent_task_id,
-            expected_start: task.planned_start,
-            expected_due: task.due_at,
-          }),
-        );
+  function startEdgeScroll() {
+    if (edgeFrameRef.current !== null) return;
+    const tick = () => {
+      edgeFrameRef.current = null;
+      const board = boardRef.current,
+        state = dragRef.current;
+      if (!board || (!state?.activated && !creationRef.current)) return;
+      const rect = board.getBoundingClientRect(),
+        horizontal = !state || state.axis !== 'vertical';
+      const dx = horizontal
+        ? timelineEdgeSpeed(
+            pointerRef.current.x,
+            rect.left + (outlineOpen ? outlineWidth : 0),
+            rect.right,
+          )
+        : 0;
+      const dy = timelineEdgeSpeed(
+        pointerRef.current.y,
+        rect.top + HEADER_HEIGHT,
+        rect.bottom,
+      );
+      if (dx || dy) {
+        board.scrollLeft += dx;
+        board.scrollTop += dy;
+        queueViewport();
+        queuePreview();
       }
-      mutationEpochRef.current++;
-      await load();
-      announceDataChanged();
-    } catch (error) {
-      setMessage(getErrorMessage(error));
-    } finally {
-      setMoving(false);
+      edgeFrameRef.current = window.requestAnimationFrame(tick);
+    };
+    edgeFrameRef.current = window.requestAnimationFrame(tick);
+  }
+  function pointerMove(event: React.PointerEvent) {
+    const gesture = dragRef.current ?? creationRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    const state = dragRef.current;
+    if (state && !state.activated) {
+      const dx = Math.abs(event.clientX - state.startX),
+        dy = Math.abs(event.clientY - state.startY);
+      if (Math.max(dx, dy) < 4) return;
+      state.activated = true;
+      state.axis =
+        outlineOpen &&
+        state.mode === 'move' &&
+        state.kind !== 'milestone' &&
+        dy > dx
+          ? 'vertical'
+          : 'horizontal';
+    }
+    queuePreview();
+    startEdgeScroll();
+  }
+  function clearFrames() {
+    for (const ref of [frameRef, edgeFrameRef])
+      if (ref.current !== null) {
+        window.cancelAnimationFrame(ref.current);
+        ref.current = null;
+      }
+  }
+  function releaseGesture() {
+    clearFrames();
+    dragRef.current = null;
+    creationRef.current = null;
+    pinnedRowRef.current = null;
+    frozenRef.current = null;
+    setDragging(false);
+    setPreview(null);
+    setDropId(null);
+    if (!busyRef.current && deferredLoad.current) {
+      deferredLoad.current = false;
+      void loadRef.current();
     }
   }
-  async function finishReorder(
-    state: Drag,
-    target: ReturnType<typeof dropTarget>,
+  function cancelGesture(event?: React.PointerEvent) {
+    const state = dragRef.current ?? creationRef.current;
+    if (event && state?.pointerId !== event.pointerId) return;
+    releaseGesture();
+  }
+  useLayoutEffect(() => {
+    cancelRef.current = () => cancelGesture();
+  });
+  async function mutate(
+    action: () => Promise<void>,
+    optimistic?: () => void,
+    rollback?: () => void,
   ) {
-    if (!repository || !target || target.id === state.id) return;
-    const task = workspace.tasks.find((item) => item.id === state.id);
-    const nextGoal =
-      state.kind === 'task'
-        ? target.kind === 'goal'
-          ? target.goalId
-          : target.goalId
-        : undefined;
-    const oldGoal = task ? (linkMap.get(task.id) ?? null) : null;
-    if (
-      task &&
-      nextGoal !== oldGoal &&
-      !window.confirm(
-        `Move “${task.title}” to ${workspace.goals.find((goal) => goal.id === nextGoal)?.title ?? 'Inbox'}? Its child tasks stay in the original Goal.`,
-      )
-    )
-      return;
+    if (busyRef.current) return;
+    busyRef.current = true;
+    guardRef.current.invalidate();
     setMoving(true);
     setMessage('');
+    optimistic?.();
+    let succeeded = false;
     try {
-      await repository.reorderTimeline({
-        kind: state.kind === 'goal' ? 'goal' : 'task',
-        id: state.id,
-        goal_id: nextGoal,
-        before_id:
-          state.kind === 'goal'
-            ? target.kind === 'goal'
-              ? target.id
-              : target.goalId
-            : target.kind === 'task'
-              ? target.id
-              : null,
-      });
-      mutationEpochRef.current++;
-      setWorkspace(await repository.getTimelineWorkspace());
-      announceDataChanged();
+      await action();
+      succeeded = true;
+      announceDataChanged('timeline');
     } catch (error) {
-      setMessage(getErrorMessage(error));
+      if (mountedRef.current) {
+        rollback?.();
+        setMessage(getErrorMessage(error));
+      }
     } finally {
-      setMoving(false);
+      busyRef.current = false;
+      if (mountedRef.current) {
+        setMoving(false);
+        if (succeeded) deferredLoad.current = true;
+        releaseGesture();
+      }
     }
   }
   async function pointerUp(event: React.PointerEvent) {
-    clearQueuedPreview();
-    if (dragRef.current && event.pointerId === dragRef.current.pointerId) {
-      const state = dragRef.current;
-      const next = dragPlan(state, event.clientX);
-      dragRef.current = null;
-      setPreview(null);
+    const gesture = dragRef.current ?? creationRef.current;
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    clearFrames();
+    const state = dragRef.current;
+    if (state) {
+      const next = dragPlan(state);
+      if (state.activated) setPreview(next);
       if (!state.activated) {
-        openInspector(state.kind, state.id);
+        releaseGesture();
+        if (!(state.kind === 'goal' && state.id === 'inbox'))
+          openPlanningEditor({ kind: state.kind, id: state.id });
         return;
       }
-      if (state.mode === 'move' && state.kind !== 'milestone') {
-        if (state.axis === 'vertical')
-          await finishReorder(state, dropTarget(event.clientX, event.clientY));
-        else await finishMove(state, next, undefined);
+      if (state.axis === 'vertical') {
+        const target = findDropTarget(),
+          targetId = target?.dataset.timelineId;
+        if (!target || !targetId || targetId === state.id || !repository) {
+          cancelGesture();
+          return;
+        }
+        const goalId = target.dataset.timelineGoal || null,
+          oldGoal = links.get(state.id) ?? null;
+        if (
+          state.kind === 'task' &&
+          goalId !== oldGoal &&
+          !window.confirm(
+            `Move “${(state.before as Task).title}” to ${index.goalsById.get(goalId ?? '')?.title ?? 'Inbox'}? Its child tasks stay in the original Goal.`,
+          )
+        ) {
+          cancelGesture();
+          return;
+        }
+        await mutate(() =>
+          repository.reorderTimeline({
+            kind: state.kind === 'goal' ? 'goal' : 'task',
+            id: state.id,
+            goal_id: state.kind === 'task' ? goalId : undefined,
+            before_id:
+              state.kind === 'goal'
+                ? target.dataset.timelineKind === 'goal'
+                  ? targetId
+                  : goalId
+                : target.dataset.timelineKind === 'task'
+                  ? targetId
+                  : null,
+          }),
+        );
         return;
       }
-      const mutationKey = `${state.kind}:${state.id}`;
-      const fields =
-        state.kind === 'task'
-          ? ['planned_start', 'due_at', 'planned_end']
-          : state.kind === 'goal'
-            ? ['starts_on', 'ends_on']
-            : ['milestone_on'];
-      const versions = new Map(
-        fields.map((field) => [
-          field,
-          nextMutationVersion(`${mutationKey}:${field}`),
-        ]),
-      );
-      setWorkspace((current) => applyTimelinePlan(current, state, next));
-      try {
-        await enqueueMutation(mutationKey, async () => {
-          if (state.kind === 'task')
-            await repository?.updateTask(state.id, {
-              planned_start: next.start,
-              due_at: deadlineIso(next.end),
-              planned_end: null,
-            });
-          if (state.kind === 'goal')
-            await repository?.updateGoal(state.id, {
+      if (
+        !repository ||
+        (state.start === next.start && state.end === next.end)
+      ) {
+        cancelGesture();
+        return;
+      }
+      await mutate(
+        async () => {
+          if (state.kind === 'task') {
+            const before = state.before as Task;
+            if (state.mode === 'move')
+              await repository.moveTimelineTask(state.id, {
+                days: daysBetween(state.start, next.start),
+                goal_id: links.get(state.id) ?? null,
+                expected_goal: links.get(state.id) ?? null,
+                expected_parent: before.parent_task_id,
+                expected_start: before.planned_start,
+                expected_due: before.due_at,
+              });
+            else
+              await repository.updateTask(state.id, {
+                planned_start: next.start,
+                due_at: deadlineIso(next.end),
+                planned_end: null,
+              });
+          } else if (state.kind === 'goal')
+            await repository.updateGoal(state.id, {
               starts_on: next.start,
               ends_on: next.end,
             });
-          if (state.kind === 'milestone')
-            await repository?.updateTimelineMilestone(state.id, {
+          else
+            await repository.updateTimelineMilestone(state.id, {
               milestone_on: next.start,
             });
-        });
-        announceDataChanged();
-      } catch (error) {
-        setWorkspace((current) => {
-          if (state.kind === 'task')
-            return {
-              ...current,
-              tasks: current.tasks.map((task) => {
-                if (task.id !== state.id) return task;
-                const rollback = { ...task };
-                if (
-                  mutationVersionsRef.current.get(
-                    `${mutationKey}:planned_start`,
-                  ) === versions.get('planned_start')
-                )
-                  rollback.planned_start = state.start;
-                if (
-                  mutationVersionsRef.current.get(`${mutationKey}:due_at`) ===
-                  versions.get('due_at')
-                )
-                  rollback.due_at = deadlineIso(state.end);
-                if (
-                  mutationVersionsRef.current.get(
-                    `${mutationKey}:planned_end`,
-                  ) === versions.get('planned_end')
-                )
-                  rollback.planned_end = null;
-                return rollback;
-              }),
-            };
-          if (state.kind === 'goal')
-            return {
-              ...current,
-              goals: current.goals.map((goal) => {
-                if (goal.id !== state.id) return goal;
-                const rollback = { ...goal };
-                if (
-                  mutationVersionsRef.current.get(
-                    `${mutationKey}:starts_on`,
-                  ) === versions.get('starts_on')
-                )
-                  rollback.starts_on = state.start;
-                if (
-                  mutationVersionsRef.current.get(`${mutationKey}:ends_on`) ===
-                  versions.get('ends_on')
-                )
-                  rollback.ends_on = state.end;
-                return rollback;
-              }),
-            };
-          return {
-            ...current,
-            milestones: current.milestones.map((milestone) =>
-              milestone.id === state.id &&
-              mutationVersionsRef.current.get(`${mutationKey}:milestone_on`) ===
-                versions.get('milestone_on')
-                ? { ...milestone, milestone_on: state.start }
-                : milestone,
-            ),
-          };
-        });
-        setMessage(getErrorMessage(error));
-      }
+        },
+        () => setWorkspace((current) => applyPlan(current, next)),
+        () =>
+          setWorkspace((current) =>
+            restoreTimelineEntity(current, state.kind, state.before),
+          ),
+      );
       return;
     }
-    const creation = createRef.current;
-    if (!creation || event.pointerId !== creation.pointerId) return;
-    createRef.current = null;
-    const column = Math.round((event.clientX - creation.startX) / dayWidth);
-    const firstX = Math.min(creation.startX, event.clientX);
-    const board = event.currentTarget.getBoundingClientRect();
-    const startOffset = Math.max(
-      0,
-      Math.round((firstX - board.left) / dayWidth),
-    );
-    const start = dateKey(addDays(range.start, startOffset));
-    const end = shiftDateKey(start, Math.max(0, Math.abs(column)));
-    if (
-      creation.row.kind === 'task' &&
-      !creation.row.task.planned_start &&
-      !deadlineKey(creation.row.task)
-    ) {
-      const taskId = creation.row.task.id;
-      const mutationKey = `task:${taskId}`;
-      const fields = ['planned_start', 'due_at', 'planned_end'];
-      const versions = new Map(
-        fields.map((field) => [
-          field,
-          nextMutationVersion(`${mutationKey}:${field}`),
-        ]),
-      );
-      const beforeTask = creation.row.task;
-      setWorkspace((current) => ({
-        ...current,
-        tasks: current.tasks.map((task) =>
-          task.id === taskId
-            ? {
-                ...task,
-                planned_start: start,
-                due_at: deadlineIso(end),
-                planned_end: null,
-              }
-            : task,
+    const creation = creationRef.current,
+      chart = chartRef.current;
+    if (!creation || !chart) {
+      cancelGesture();
+      return;
+    }
+    const lastDay = Math.min(
+      rangeDays - 1,
+      Math.max(
+        0,
+        Math.round(
+          (event.clientX - chart.getBoundingClientRect().left) / dayWidth,
         ),
-      }));
-      try {
-        await enqueueMutation(mutationKey, async () => {
-          await repository?.updateTask(taskId, {
+      ),
+    );
+    const start = dateKey(addDays(origin, Math.min(creation.day, lastDay))),
+      end = dateKey(addDays(origin, Math.max(creation.day, lastDay))),
+      task = creation.task;
+    if (task && (!task.planned_start || !deadlineKey(task)) && repository) {
+      await mutate(
+        () =>
+          repository.updateTask(task.id, {
             planned_start: start,
             due_at: deadlineIso(end),
             planned_end: null,
-          });
-        });
-        announceDataChanged();
-      } catch (error) {
-        setWorkspace((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => {
-            if (task.id !== taskId) return task;
-            const rollback = { ...task };
-            for (const field of fields)
-              if (
-                mutationVersionsRef.current.get(`${mutationKey}:${field}`) ===
-                versions.get(field)
-              )
-                Object.assign(rollback, {
-                  [field]: beforeTask[field as keyof Task],
-                });
-            return rollback;
           }),
-        }));
-        setMessage(getErrorMessage(error));
-      }
-      return;
+        () =>
+          setWorkspace((current) =>
+            applyPlan(current, { kind: 'task', id: task.id, start, end }),
+          ),
+        () =>
+          setWorkspace((current) =>
+            restoreTimelineEntity(current, 'task', task),
+          ),
+      );
+    } else {
+      const goalId =
+        creation.row.goal?.id ??
+        (task ? links.get(task.id) : creation.row.tasks[0]?.row.goalId);
+      releaseGesture();
+      setChoice({
+        goalId: goalId === 'inbox' ? undefined : (goalId ?? undefined),
+        taskId: task?.id,
+        date: start,
+        endDate: end,
+      });
     }
-    setDraft({
-      kind: null,
-      title: '',
-      start,
-      end,
-      goalId:
-        creation.row.kind === 'goal' && creation.row.goal.id !== 'inbox'
-          ? creation.row.goal.id
-          : creation.row.kind === 'task'
-            ? (creation.row.goalId ?? '')
-            : '',
-      parentTaskId: creation.row.kind === 'task' ? creation.row.task.id : '',
-    });
   }
-
-  function changeZoom(next: Zoom) {
-    if (next === zoom) return;
-    const scroll = boardScrollRef.current;
-    const outline = outlineOpen ? outlineWidth : 0;
-    const centerDay = scroll
-      ? Math.max(
+  function startCreation(
+    event: React.PointerEvent<HTMLDivElement>,
+    row: TimelineLayoutRow,
+  ) {
+    if (
+      busyRef.current ||
+      dragRef.current ||
+      creationRef.current ||
+      (event.target as HTMLElement).closest('[data-bar]')
+    )
+      return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    beginGesture(row);
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    creationRef.current = {
+      row,
+      task: outlineOpen ? row.tasks[0]?.row.task : undefined,
+      pointerId: event.pointerId,
+      day: Math.min(
+        rangeDays - 1,
+        Math.max(
           0,
-          (scroll.scrollLeft + scroll.clientWidth / 2 - outline) / dayWidth,
-        )
-      : 0;
-    setZoom(next);
-    window.requestAnimationFrame(() => {
-      const current = boardScrollRef.current;
-      if (!current) return;
-      current.scrollLeft = Math.max(
-        0,
-        outline + centerDay * dayWidths[next] - current.clientWidth / 2,
+          Math.round(
+            (event.clientX - chart.getBoundingClientRect().left) / dayWidth,
+          ),
+        ),
+      ),
+    };
+  }
+  const visibleDays = useMemo(() => {
+    const first = Math.max(0, Math.floor(viewport.left / dayWidth) - 30),
+      end = Math.min(
+        rangeDays,
+        Math.ceil((viewport.left + viewport.width) / dayWidth) + 30,
       );
+    return Array.from({ length: Math.max(0, end - first) }, (_, i) => {
+      const offset = first + i,
+        day = addDays(origin, offset),
+        key = dateKey(day),
+        holiday = holidays.filter(
+          (item) => item.starts_on <= key && item.ends_on >= key,
+        );
+      return {
+        offset,
+        day,
+        key,
+        holiday,
+        title: [
+          day.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          }),
+          ...holiday.map((item) => item.title),
+        ].join('\n'),
+      };
     });
+  }, [origin, rangeDays, dayWidth, viewport.left, viewport.width, holidays]);
+  const todayLeft = daysBetween(originKey, dateKey(new Date())) * dayWidth,
+    isFrozen = dragging || moving;
+  function barGeometry(start: string, end: string, task: boolean) {
+    const inset = task && !outlineOpen ? 2 : 0;
+    return {
+      left: daysBetween(originKey, start) * dayWidth + inset,
+      width: Math.max(10, (daysBetween(start, end) + 1) * dayWidth - inset * 2),
+    };
   }
-
-  function openInspector(kind: Preview['kind'], id: string) {
-    openPlanningEditor({ kind, id });
-  }
-  async function saveDraft(event: React.SyntheticEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!repository || !draft?.kind || !draft.title.trim()) return;
-    setMessage('');
-    if (draft.id && draft.kind === 'milestone') {
-      const saved = draft;
-      const previous = workspace.milestones.find(
-        (item) => item.id === draft.id,
-      );
-      if (!previous) return;
-      const changes = {
-        title: draft.title.trim(),
-        milestone_on: draft.start,
-        goal_id: draft.goalId || null,
-        color_key: draft.colorKey ?? null,
-      };
-      const key = `milestone:${draft.id}`;
-      const fields = ['title', 'milestone_on', 'goal_id', 'color_key'] as const;
-      const versions = new Map(
-        fields.map((field) => [field, nextMutationVersion(`${key}:${field}`)]),
-      );
-      setWorkspace((current) => ({
-        ...current,
-        milestones: current.milestones.map((item) =>
-          item.id === saved.id ? { ...item, ...changes } : item,
-        ),
-      }));
-      setDraft(null);
-      try {
-        await enqueueMutation(key, () =>
-          repository.updateTimelineMilestone(saved.id!, changes),
-        );
-        announceDataChanged();
-      } catch (error) {
-        setWorkspace((current) => ({
-          ...current,
-          milestones: current.milestones.map((item) => {
-            if (item.id !== saved.id) return item;
-            const rollback = { ...item };
-            for (const field of fields)
-              if (
-                mutationVersionsRef.current.get(`${key}:${field}`) ===
-                versions.get(field)
-              )
-                Object.assign(rollback, { [field]: previous[field] });
-            return rollback;
-          }),
-        }));
-        setMessage(getErrorMessage(error));
-      }
-      return;
-    }
-    if (draft.id && draft.kind === 'goal') {
-      const saved = draft;
-      const previous = workspace.goals.find((goal) => goal.id === draft.id);
-      if (!previous) return;
-      const changes = {
-        title: draft.title.trim(),
-        description: draft.description?.trim() || null,
-        starts_on: draft.start || null,
-        ends_on: draft.end || null,
-      };
-      const key = `goal:${draft.id}`;
-      const fields = Object.keys(changes) as Array<keyof Goal>;
-      const versions = new Map(
-        fields.map((field) => [field, nextMutationVersion(`${key}:${field}`)]),
-      );
-      setWorkspace((current) => ({
-        ...current,
-        goals: current.goals.map((goal) =>
-          goal.id === saved.id ? { ...goal, ...changes } : goal,
-        ),
-      }));
-      setDraft(null);
-      try {
-        await enqueueMutation(key, () =>
-          repository.updateGoal(saved.id!, changes),
-        );
-        announceDataChanged();
-      } catch (error) {
-        setWorkspace((current) => ({
-          ...current,
-          goals: current.goals.map((goal) => {
-            if (goal.id !== saved.id) return goal;
-            const rollback = { ...goal };
-            for (const field of fields)
-              if (
-                mutationVersionsRef.current.get(`${key}:${field}`) ===
-                versions.get(field)
-              )
-                Object.assign(rollback, { [field]: previous[field] });
-            return rollback;
-          }),
-        }));
-        setMessage(getErrorMessage(error));
-      }
-      return;
-    }
-    if (draft.id && draft.kind === 'task') {
-      const saved = draft;
-      const previous = workspace.tasks.find((item) => item.id === draft.id);
-      const previousGoalId = linkMap.get(draft.id) ?? null;
-      const selectedStatus = workspace.statuses.find(
-        (item) => item.id === draft.statusId,
-      );
-      if (!previous) return;
-      if (
-        !previous.completed_at &&
-        selectedStatus?.category === 'completed' &&
-        previous.checklist_resolved_count < previous.active_checklist_count &&
-        !window.confirm(
-          'Complete this Task and mark its unfinished checklist items Not needed?',
-        )
-      )
-        return;
-      const changes = {
-        title: draft.title.trim(),
-        priority: draft.priority ?? previous.priority,
-        planned_start: draft.start || null,
-        due_at: deadlineIso(draft.end || null),
-        planned_end: null,
-        goal_id: draft.goalId || null,
-        link_url: draft.linkUrl?.trim() || null,
-        ...(selectedStatus?.category === 'completed'
-          ? {}
-          : { workflow_status_id: selectedStatus?.id }),
-      };
-      const optimistic = {
-        ...previous,
-        ...changes,
-        workflow_status_id: selectedStatus?.id ?? previous.workflow_status_id,
-        completed_at:
-          selectedStatus?.category === 'completed'
-            ? (previous.completed_at ?? new Date().toISOString())
-            : null,
-        progress:
-          selectedStatus?.category === 'completed' ? 100 : previous.progress,
-      };
-      const key = `task:${draft.id}`;
-      const fields = [
-        ...Object.keys(changes).filter((field) => field !== 'goal_id'),
-        'workflow_status_id',
-        'completed_at',
-        'progress',
-        'goal-link',
-      ];
-      const versions = new Map(
-        fields.map((field) => [field, nextMutationVersion(`${key}:${field}`)]),
-      );
-      setWorkspace((current) => ({
-        ...current,
-        tasks: current.tasks.map((item) =>
-          item.id === saved.id ? optimistic : item,
-        ),
-        links: [
-          ...current.links.filter((link) => link.task_id !== saved.id),
-          ...(saved.goalId
-            ? [{ task_id: saved.id!, goal_id: saved.goalId }]
-            : []),
-        ],
-      }));
-      setDraft(null);
-      try {
-        await enqueueMutation(key, async () => {
-          try {
-            if (
-              previous.completed_at &&
-              selectedStatus?.category !== 'completed'
-            )
-              await repository.setTaskCompletion(saved.id!, false);
-            await repository.updateTask(saved.id!, changes);
-            if (
-              !previous.completed_at &&
-              selectedStatus?.category === 'completed'
-            )
-              await repository.setTaskCompletion(saved.id!, true);
-          } catch (error) {
-            try {
-              await repository.setTaskCompletion(
-                saved.id!,
-                Boolean(previous.completed_at),
-              );
-              await repository.updateTask(saved.id!, {
-                title: previous.title,
-                priority: previous.priority,
-                planned_start: previous.planned_start,
-                due_at: previous.due_at,
-                planned_end: previous.planned_end,
-                goal_id: previousGoalId,
-                link_url: previous.link_url,
-              });
-            } catch {
-              /* original failure remains the actionable error */
-            }
-            throw error;
-          }
-        });
-        announceDataChanged();
-      } catch (error) {
-        setWorkspace((current) => ({
-          ...current,
-          tasks: current.tasks.map((item) => {
-            if (item.id !== saved.id) return item;
-            const rollback = { ...item };
-            for (const field of fields) {
-              if (
-                field === 'goal-link' ||
-                mutationVersionsRef.current.get(`${key}:${field}`) !==
-                  versions.get(field)
-              )
-                continue;
-              Object.assign(rollback, {
-                [field]: previous[field as keyof Task],
-              });
-            }
-            return rollback;
-          }),
-          links:
-            mutationVersionsRef.current.get(`${key}:goal-link`) ===
-            versions.get('goal-link')
-              ? [
-                  ...current.links.filter((link) => link.task_id !== saved.id),
-                  ...(previousGoalId
-                    ? [{ task_id: saved.id!, goal_id: previousGoalId }]
-                    : []),
-                ]
-              : current.links,
-        }));
-        try {
-          const fresh = await repository.getTimelineWorkspace();
-          const serverTask = fresh.tasks.find((item) => item.id === saved.id);
-          const serverLink = fresh.links.find(
-            (link) => link.task_id === saved.id,
-          );
-          if (serverTask)
-            setWorkspace((current) => {
-              const goalLinkIsLatest =
-                mutationVersionsRef.current.get(`${key}:goal-link`) ===
-                versions.get('goal-link');
-              return {
-                ...current,
-                tasks: current.tasks.map((item) => {
-                  if (item.id !== saved.id) return item;
-                  const reconciled = { ...item };
-                  for (const field of fields) {
-                    if (
-                      field === 'goal-link' ||
-                      mutationVersionsRef.current.get(`${key}:${field}`) !==
-                        versions.get(field)
-                    )
-                      continue;
-                    Object.assign(reconciled, {
-                      [field]: serverTask[field as keyof Task],
-                    });
-                  }
-                  return reconciled;
-                }),
-                links: goalLinkIsLatest
-                  ? [
-                      ...current.links.filter(
-                        (link) => link.task_id !== saved.id,
-                      ),
-                      ...(serverLink ? [serverLink] : []),
-                    ]
-                  : current.links,
-              };
-            });
-        } catch {
-          /* keep the targeted optimistic rollback when reconciliation fails */
-        }
-        setMessage(getErrorMessage(error));
-      }
-      return;
-    }
-    try {
-      if (draft.id && draft.kind === 'milestone') {
-        await repository.updateTimelineMilestone(draft.id, {
-          title: draft.title.trim(),
-          milestone_on: draft.start,
-          goal_id: draft.goalId || null,
-          is_important: Boolean(draft.important),
-        });
-        setWorkspace((current) => ({
-          ...current,
-          milestones: current.milestones.map((item) =>
-            item.id === draft.id
-              ? {
-                  ...item,
-                  title: draft.title.trim(),
-                  milestone_on: draft.start,
-                  goal_id: draft.goalId || null,
-                  is_important: Boolean(draft.important),
-                }
-              : item,
-          ),
-        }));
-      } else if (draft.id && draft.kind === 'goal') {
-        await repository.updateGoal(draft.id, {
-          title: draft.title.trim(),
-          description: draft.description?.trim() || null,
-          starts_on: draft.start || null,
-          ends_on: draft.end || null,
-        });
-        setWorkspace((current) => ({
-          ...current,
-          goals: current.goals.map((goal) =>
-            goal.id === draft.id
-              ? {
-                  ...goal,
-                  title: draft.title.trim(),
-                  description: draft.description?.trim() || null,
-                  starts_on: draft.start || null,
-                  ends_on: draft.end || null,
-                }
-              : goal,
-          ),
-        }));
-      } else if (draft.id && draft.kind === 'task') {
-        const task = workspace.tasks.find((item) => item.id === draft.id);
-        const selectedStatus = workspace.statuses.find(
-          (item) => item.id === draft.statusId,
-        );
-        if (
-          task &&
-          !task.completed_at &&
-          selectedStatus?.category === 'completed' &&
-          task.checklist_resolved_count < task.active_checklist_count &&
-          !window.confirm(
-            'Complete this Task and mark its unfinished checklist items Not needed?',
-          )
-        )
-          return;
-        if (task?.completed_at && selectedStatus?.category !== 'completed')
-          await repository.setTaskCompletion(draft.id, false);
-        await repository.updateTask(draft.id, {
-          title: draft.title.trim(),
-          priority: draft.priority ?? task?.priority ?? 'medium',
-          planned_start: draft.start || null,
-          due_at: deadlineIso(draft.end || null),
-          planned_end: null,
-          goal_id: draft.goalId || null,
-          link_url: draft.linkUrl?.trim() || null,
-          ...(selectedStatus?.category === 'completed'
-            ? {}
-            : { workflow_status_id: selectedStatus?.id }),
-        });
-        if (!task?.completed_at && selectedStatus?.category === 'completed')
-          await repository.setTaskCompletion(draft.id, true);
-        setWorkspace((current) => ({
-          ...current,
-          tasks: current.tasks.map((item) =>
-            item.id === draft.id
-              ? {
-                  ...item,
-                  title: draft.title.trim(),
-                  priority: draft.priority ?? item.priority,
-                  planned_start: draft.start || null,
-                  due_at: deadlineIso(draft.end || null),
-                  planned_end: null,
-                  link_url: draft.linkUrl?.trim() || null,
-                  workflow_status_id:
-                    selectedStatus?.id ?? item.workflow_status_id,
-                  completed_at:
-                    selectedStatus?.category === 'completed'
-                      ? (item.completed_at ?? new Date().toISOString())
-                      : null,
-                  progress:
-                    selectedStatus?.category === 'completed'
-                      ? 100
-                      : item.progress,
-                }
-              : item,
-          ),
-          links: [
-            ...current.links.filter((link) => link.task_id !== draft.id),
-            ...(draft.goalId
-              ? [{ task_id: draft.id!, goal_id: draft.goalId }]
-              : []),
-          ],
-        }));
-      } else if (draft.kind === 'goal') {
-        const id = await repository.createGoal({
-          title: draft.title.trim(),
-          description: null,
-          starts_on: draft.start,
-          ends_on: draft.end,
-          color_key: 'jade',
-        });
-        setWorkspace((current) => ({
-          ...current,
-          goals: [
-            ...current.goals,
-            {
-              id,
-              title: draft.title.trim(),
-              description: null,
-              starts_on: draft.start,
-              ends_on: draft.end,
-              color_key: 'jade',
-              progress: 0,
-              status: 'active',
-              archived_at: null,
-              deleted_at: null,
-              task_count: 0,
-              completed_task_count: 0,
-            },
-          ],
-        }));
-      } else if (draft.kind === 'task') {
-        const status =
-          workspace.statuses.find((item) => item.category === 'planned') ??
-          workspace.statuses[0];
-        if (!status) throw new Error('No workflow status is available.');
-        const id = await repository.createTask({
-          title: draft.title.trim(),
-          priority: 'medium',
-          due_at: deadlineIso(draft.end),
-          workflow_status_id: status.id,
-          planned_start: draft.start,
-          planned_end: null,
-          progress: 0,
-          parent_task_id: draft.parentTaskId || null,
-          dependency_task_id: null,
-          is_milestone: false,
-          goal_id: draft.goalId || undefined,
-        });
-        setWorkspace((current) => ({
-          ...current,
-          tasks: [
-            ...current.tasks,
-            {
-              id,
-              title: draft.title.trim(),
-              priority: 'medium',
-              due_at: deadlineIso(draft.end),
-              completed_at: null,
-              workflow_status_id: status.id,
-              previous_status_id: null,
-              planned_start: draft.start,
-              planned_end: null,
-              progress: 0,
-              parent_task_id: draft.parentTaskId || null,
-              dependency_task_id: null,
-              is_milestone: false,
-              archived_at: null,
-              deleted_at: null,
-              link_url: null,
-              link_label: null,
-              active_checklist_count: 0,
-              checklist_resolved_count: 0,
-              checklist_done_count: 0,
-            },
-          ],
-          links: draft.goalId
-            ? [...current.links, { task_id: id, goal_id: draft.goalId }]
-            : current.links,
-        }));
-      } else {
-        const id = await repository.createTimelineMilestone({
-          title: draft.title.trim(),
-          milestone_on: draft.start,
-          goal_id: draft.goalId || null,
-          color_key: draft.colorKey ?? null,
-          is_important: Boolean(draft.important),
-        });
-        setWorkspace((current) => ({
-          ...current,
-          milestones: [
-            ...current.milestones,
-            {
-              id,
-              title: draft.title.trim(),
-              milestone_on: draft.start,
-              goal_id: draft.goalId || null,
-              color_key: draft.colorKey ?? null,
-              is_important: Boolean(draft.important),
-            },
-          ],
-        }));
-      }
-      setDraft(null);
-      announceDataChanged();
-    } catch (error) {
-      setMessage(getErrorMessage(error));
-    }
-  }
-  async function removeMilestone() {
-    if (!repository || !draft?.id) return;
-    const target = workspace.milestones.find((item) => item.id === draft.id);
-    const index = workspace.milestones.findIndex(
-      (item) => item.id === draft.id,
+  function renderBar(
+    row: TimelineLayoutRow,
+    kind: 'goal' | 'task',
+    entity: Goal | Task,
+    original: { start: string | null; end: string | null },
+    color: string,
+    baseColor: string,
+  ) {
+    const plan =
+      preview?.kind === kind && preview.id === entity.id ? preview : original;
+    if (!plan.start || !plan.end || (kind === 'goal' && entity.id === 'inbox'))
+      return null;
+    const { left, width } = barGeometry(plan.start, plan.end, kind === 'task');
+    const label = visibleTimelineLabel(
+      left,
+      width,
+      viewport.left,
+      viewport.width - (outlineOpen ? outlineWidth : 0),
     );
-    const id = draft.id;
-    setWorkspace((current) => ({
-      ...current,
-      milestones: current.milestones.filter((item) => item.id !== id),
-    }));
-    setDraft(null);
-    try {
-      await repository.deleteTimelineMilestone(id);
-      announceDataChanged();
-    } catch (error) {
-      if (target)
-        setWorkspace((current) => ({
-          ...current,
-          milestones: [
-            ...current.milestones.slice(0, Math.max(index, 0)),
-            target,
-            ...current.milestones.slice(Math.max(index, 0)),
-          ],
-        }));
-      setMessage(getErrorMessage(error));
-    }
+    const showTitle = kind === 'goal' || !outlineOpen,
+      top = row.height - (kind === 'goal' ? 46 : 31),
+      task = kind === 'task' ? (entity as Task) : null;
+    const selected = selection?.kind === kind && selection.id === entity.id;
+    return (
+      <div
+        key={`bar:${entity.id}`}
+        data-bar
+        data-timeline-select={`${kind}:${entity.id}`}
+        className="group/task absolute"
+        style={{ left, top, width, height: kind === 'goal' ? 36 : 22 }}
+      >
+        <button
+          type="button"
+          data-bar
+          data-timeline-focus={outlineOpen ? undefined : `${kind}:${entity.id}`}
+          aria-label={`Edit ${kind} ${entity.title}`}
+          title={`${entity.title}\n${plan.start} → ${plan.end}`}
+          className={`absolute inset-0 touch-none rounded-md border text-[10px] font-semibold shadow-sm hover:brightness-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${selected ? 'ring-2 ring-primary/60' : ''}`}
+          style={{
+            background: color,
+            borderColor: baseColor,
+            color: kind === 'goal' ? 'white' : undefined,
+          }}
+          onPointerDown={(event) =>
+            startDrag(event, row, kind, entity.id, plan as Plan, 'move')
+          }
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openPlanningEditor({ kind, id: entity.id });
+            }
+          }}
+        >
+          <span
+            className="absolute inset-y-0 left-0 z-20 cursor-ew-resize"
+            style={{ width: Math.min(6, width / 3) }}
+            onPointerDown={(event) =>
+              startDrag(
+                event,
+                row,
+                kind,
+                entity.id,
+                plan as Plan,
+                'resize-start',
+              )
+            }
+          />
+          <span
+            className="absolute inset-y-0 right-0 z-20 cursor-ew-resize rounded-r bg-black/15"
+            style={{ width: Math.min(6, width / 3) }}
+            onPointerDown={(event) =>
+              startDrag(event, row, kind, entity.id, plan as Plan, 'resize-end')
+            }
+          />
+        </button>
+        {showTitle && label ? (
+          <div
+            className="pointer-events-none absolute inset-y-0 flex items-center gap-1 overflow-hidden"
+            style={{
+              left: label.left - left,
+              width: label.width,
+              color: kind === 'goal' ? 'white' : undefined,
+            }}
+          >
+            <span
+              aria-hidden="true"
+              className="min-w-0 flex-1 truncate text-[10px] font-semibold"
+            >
+              {entity.title}
+            </span>
+            {task && label.width >= 20 && safeTaskLink(task) ? (
+              <TaskLink
+                task={task}
+                className="pointer-events-auto relative z-30 !min-h-5 !min-w-5 !p-0.5"
+              />
+            ) : null}
+          </div>
+        ) : null}
+        {task &&
+        !outlineOpen &&
+        safeTaskLink(task) &&
+        (!label || label.width < 20) ? (
+          <div
+            data-bar
+            className="absolute top-full z-40 hidden w-64 items-center gap-2 rounded-lg border bg-popover p-2 text-popover-foreground shadow-md group-hover/task:flex group-focus-within/task:flex"
+            style={{ left: Math.max(0, viewport.left - left + 8) }}
+          >
+            <span className="min-w-0 flex-1 break-words text-xs">
+              {task.title}
+            </span>
+            <TaskLink task={task} />
+          </div>
+        ) : null}
+      </div>
+    );
   }
-
-  const todayLeft =
-    daysBetween(dateKey(range.start), dateKey(new Date())) * dayWidth;
+  function renderMarkers(
+    row: TimelineLayoutRow,
+    clusters: MilestoneCluster<TimelineMilestone>[],
+    label: string,
+    inherited: string,
+  ) {
+    return clusters
+      .filter(
+        (group) =>
+          group.items.some((item) => item.id === dragRef.current?.id) ||
+          (daysBetween(originKey, group.day) * dayWidth + group.width >=
+            viewport.left - 240 &&
+            daysBetween(originKey, group.day) * dayWidth <=
+              viewport.left + viewport.width + 240),
+      )
+      .map((group) => {
+        if (group.items.length > 1) {
+          const important = group.items.some((item) => item.is_important);
+          return (
+            <button
+              key={`cluster:${group.items[0].id}`}
+              type="button"
+              data-bar
+              aria-label={`Open ${group.items.length} milestones for ${label}${important ? ' (Important)' : ''}`}
+              title={`${group.items.length} milestones · ${label}`}
+              className={`absolute top-0.5 z-10 flex h-7 items-center justify-center gap-1 rounded-md border bg-card text-xs font-semibold shadow-sm hover:bg-muted ${important ? 'border-2 border-foreground/70' : ''}`}
+              style={{
+                left: daysBetween(originKey, group.day) * dayWidth,
+                width: group.width,
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => setCluster({ items: group.items, label })}
+            >
+              {important ? (
+                <Star className="size-4 fill-current" aria-hidden="true" />
+              ) : (
+                <Flag
+                  className="size-4"
+                  style={{ color: inherited }}
+                  aria-hidden="true"
+                />
+              )}
+              {group.items.length}
+            </button>
+          );
+        }
+        const item = group.items[0],
+          day =
+            preview?.kind === 'milestone' && preview.id === item.id
+              ? preview.start
+              : item.milestone_on;
+        return (
+          <button
+            key={`marker:${item.id}`}
+            type="button"
+            data-bar
+            aria-label={`Edit milestone ${item.title}${item.is_important ? ' (Important)' : ''}`}
+            title={`${item.is_important ? '★ Important · ' : ''}${item.title}\n${item.milestone_on}\n${label}${notes[item.id] ? `\n${notes[item.id]}` : ''}`}
+            className={`absolute top-0.5 z-10 flex h-7 touch-none items-center gap-1 overflow-hidden rounded-md ${item.is_important ? 'border-2 border-foreground/70 bg-card px-1 text-xs font-semibold shadow-sm' : 'justify-center hover:bg-muted'}`}
+            style={{
+              left: daysBetween(originKey, day) * dayWidth,
+              width: milestoneMarkerWidth(item),
+            }}
+            onMouseEnter={() => milestoneNotes(item.id)}
+            onFocus={() => milestoneNotes(item.id)}
+            onPointerDown={(event) =>
+              startDrag(
+                event,
+                row,
+                'milestone',
+                item.id,
+                { start: item.milestone_on, end: item.milestone_on },
+                'move',
+              )
+            }
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openPlanningEditor({ kind: 'milestone', id: item.id });
+              }
+            }}
+          >
+            {item.is_important ? (
+              <Star
+                className="size-5 shrink-0 fill-current"
+                style={{
+                  color: milestoneColorValue(item.color_key, inherited),
+                }}
+                aria-hidden="true"
+              />
+            ) : (
+              <Flag
+                className="size-5 fill-current"
+                style={{
+                  color: milestoneColorValue(item.color_key, inherited),
+                }}
+                aria-hidden="true"
+              />
+            )}
+            {item.is_important ? (
+              <span className="min-w-0 truncate">{item.title}</span>
+            ) : null}
+          </button>
+        );
+      });
+  }
   return (
     <section
       aria-labelledby="timeline-heading"
       onPointerDownCapture={guardPlanningPointer}
     >
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 text-[10px] font-bold uppercase tracking-[.15em] text-primary">
-            Plan the horizon
-          </p>
-          <h1
-            id="timeline-heading"
-            className="text-3xl font-semibold tracking-[-.04em] md:text-[42px]"
-          >
-            Gantt timeline
-          </h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-1">
+      <p className="mb-2 text-[10px] font-bold uppercase tracking-[.15em] text-primary">
+        Plan the horizon
+      </p>
+      <h1
+        id="timeline-heading"
+        className="text-3xl font-semibold tracking-[-.04em] md:text-[42px]"
+      >
+        Gantt timeline
+      </h1>
+      <div
+        className="mt-4 flex flex-wrap items-center gap-2"
+        aria-label="Timeline controls"
+      >
+        <Button variant="outline" onClick={goToday} disabled={isFrozen}>
+          Today
+        </Button>
+        <label className="flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 text-xs font-semibold">
           <input
-            type="search"
-            aria-label="Search Timeline"
-            data-shortcut-search
-            placeholder="Find goal, task or milestone…"
-            className="mr-2 rounded-lg border bg-background px-3 py-2 text-sm"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            type="checkbox"
+            checked={importantOnly}
+            disabled={isFrozen}
+            onChange={(event) => setImportantOnly(event.target.checked)}
           />
-          <Button
-            size="icon-sm"
-            variant="outline"
-            aria-label={outlineOpen ? 'Hide outline' : 'Show outline'}
-            onClick={() => setOutlineOpen((open) => !open)}
-          >
-            {outlineOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
-          </Button>
-          <Button
-            size="icon-sm"
-            variant="outline"
-            aria-label="Zoom out"
-            disabled={zoom === 'year'}
-            onClick={() => {
-              const levels: Zoom[] = ['week', 'month', 'quarter', 'year'];
-              changeZoom(
-                levels[Math.min(levels.length - 1, levels.indexOf(zoom) + 1)],
-              );
-            }}
-          >
-            <ZoomOut />
-          </Button>
-          {(['week', 'month', 'quarter', 'year'] as Zoom[]).map((item) => (
+          <Star className="size-3.5" aria-hidden="true" />
+          Important only
+        </label>
+        <input
+          type="search"
+          aria-label="Search Timeline"
+          data-shortcut-search
+          placeholder="Find goal, task or milestone…"
+          value={query}
+          disabled={isFrozen}
+          onChange={(event) => setQuery(event.target.value)}
+          className="min-w-0 rounded-lg border bg-background px-3 py-2 text-sm sm:w-64"
+        />
+        <Button
+          size="icon-sm"
+          variant="outline"
+          aria-label={outlineOpen ? 'Hide outline' : 'Show outline'}
+          aria-pressed={!outlineOpen}
+          disabled={isFrozen}
+          onClick={() => setOutlineOpen((open) => !open)}
+        >
+          {outlineOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
+        </Button>
+        <fieldset
+          className="flex flex-wrap items-center gap-1"
+          aria-label="Timeline zoom"
+          title="Ctrl + mouse wheel to zoom around the pointer"
+        >
+          {TIMELINE_ZOOMS.map((item) => (
             <Button
               key={item}
               size="sm"
               variant={zoom === item ? 'default' : 'outline'}
+              aria-pressed={zoom === item}
               className="capitalize"
+              disabled={isFrozen}
               onClick={() => changeZoom(item)}
             >
               {item}
             </Button>
           ))}
-          <Button
-            size="icon-sm"
-            variant="outline"
-            aria-label="Zoom in"
-            disabled={zoom === 'week'}
-            onClick={() => {
-              const levels: Zoom[] = ['week', 'month', 'quarter', 'year'];
-              changeZoom(levels[Math.max(0, levels.indexOf(zoom) - 1)]);
-            }}
-          >
-            <ZoomIn />
-          </Button>
-        </div>
+        </fieldset>
+        {moving ? (
+          <output className="text-xs text-muted-foreground">Saving…</output>
+        ) : null}
+        {importantOnly &&
+        !workspace.milestones.some((item) => item.is_important) ? (
+          <output className="text-xs text-muted-foreground">
+            No important milestones yet.
+          </output>
+        ) : null}
       </div>
       {message ? (
-        <p
-          className="mt-4 rounded-xl border bg-muted p-3 text-xs"
-          aria-live="polite"
-        >
+        <output className="mt-3 block rounded-xl border bg-muted p-3 text-xs">
           {message}
-        </p>
+        </output>
       ) : null}
       {loading ? (
         <div className="grid min-h-[420px] place-items-center">
-          <LoaderCircle className="animate-spin text-primary" />
+          <LoaderCircle
+            className="animate-spin text-primary"
+            aria-label="Loading Timeline"
+          />
         </div>
       ) : (
-        <>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button
-              data-shortcut-action="previous"
-              variant="outline"
-              onClick={extendEarlier}
-            >
-              ← Earlier
-            </Button>
-            <Button
-              data-shortcut-action="next"
-              variant="outline"
-              onClick={extendLater}
-            >
-              Later →
-            </Button>
-            <Button
-              variant="outline"
-              data-shortcut-action="today"
-              onClick={() => {
-                const board = boardScrollRef.current;
-                if (board)
-                  board.scrollLeft = timelineTodayScrollLeft(
-                    daysBetween(dateKey(range.start), dateKey(new Date())) *
-                      dayWidth,
-                    board.clientWidth,
-                    outlineOpen ? outlineWidth : 0,
-                  );
-              }}
-            >
-              Today
-            </Button>
-            <Button
-              variant="outline"
-              data-shortcut-action="create"
-              onClick={() => openPlanningEditor({ kind: 'milestone' })}
-            >
-              Add milestone
-            </Button>
-            <label className="flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 text-xs font-semibold">
-              <input
-                type="checkbox"
-                checked={importantOnly}
-                onChange={(event) => setImportantOnly(event.target.checked)}
-              />
-              <Star className="size-3.5" aria-hidden="true" />
-              Important only
-            </label>
-            {importantOnly &&
-            !workspace.milestones.some((item) => item.is_important) ? (
-              <span role="status" className="text-xs text-muted-foreground">
-                No important milestones yet.
-              </span>
-            ) : null}
-            {moving ? (
-              <output className="text-sm text-muted-foreground">
-                Saving group change…
-              </output>
-            ) : null}
-          </div>
-          <div
-            ref={boardScrollRef}
-            className="mt-3 h-[max(480px,calc(100dvh-250px))] overflow-auto rounded-2xl border bg-card shadow-sm"
-            onScroll={(event) => {
-              const node = event.currentTarget;
-              setViewport({ left: node.scrollLeft, width: node.clientWidth });
-              const horizontal = node.scrollLeft !== previousScrollLeft.current;
-              previousScrollLeft.current = node.scrollLeft;
-              if (
-                !horizontal ||
-                pendingScrollShift.current !== null ||
-                dragRef.current ||
-                createRef.current
-              )
-                return;
-              if (node.scrollLeft < 2) extendEarlier();
-              else if (
-                node.scrollLeft + node.clientWidth >
-                node.scrollWidth - 80
-              )
-                extendLater();
-            }}
-            onWheel={(event) => {
-              if (!event.ctrlKey && !event.metaKey) return;
-              event.preventDefault();
-              const levels: Zoom[] = ['week', 'month', 'quarter', 'year'];
-              const direction = event.deltaY > 0 ? 1 : -1;
-              changeZoom(
-                levels[
-                  Math.max(
-                    0,
-                    Math.min(
-                      levels.length - 1,
-                      levels.indexOf(zoom) + direction,
-                    ),
-                  )
-                ],
+        <div
+          ref={boardRef}
+          className="mt-3 h-[max(480px,calc(100dvh-250px))] overflow-auto rounded-2xl border bg-card shadow-sm"
+          data-timeline-board
+          onScroll={() => {
+            queueViewport();
+            const board = boardRef.current;
+            if (!board || isFrozen || pendingScroll.current !== null) return;
+            if (board.scrollLeft < 2 && viewport.left !== board.scrollLeft)
+              extendEarlier();
+            else if (
+              board.scrollLeft + board.clientWidth > board.scrollWidth - 80 &&
+              viewport.left !== board.scrollLeft
+            )
+              extendLater();
+          }}
+          onPointerDownCapture={(event) => {
+            const value = (event.target as HTMLElement).closest<HTMLElement>(
+              '[data-timeline-select]',
+            )?.dataset.timelineSelect;
+            if (value) {
+              const colon = value.indexOf(':');
+              setSelection({
+                kind: value.slice(0, colon) as Selection['kind'],
+                id: value.slice(colon + 1),
+              });
+            }
+          }}
+          onFocusCapture={(event) => {
+            const value = (event.target as HTMLElement).closest<HTMLElement>(
+              '[data-timeline-select]',
+            )?.dataset.timelineSelect;
+            if (value) {
+              const colon = value.indexOf(':');
+              setSelection((old) =>
+                old?.id === value.slice(colon + 1) &&
+                old.kind === value.slice(0, colon)
+                  ? old
+                  : {
+                      kind: value.slice(0, colon) as Selection['kind'],
+                      id: value.slice(colon + 1),
+                    },
               );
-            }}
-          >
-            <div className="flex min-w-max" inert={moving}>
+            }
+          }}
+        >
+          <div className="flex min-w-max" inert={moving}>
+            {outlineOpen ? (
               <div
-                className={`sticky left-0 z-30 shrink-0 overflow-hidden bg-card transition-[width] ${outlineOpen ? 'border-r' : 'w-0 border-r-0'}`}
-                inert={!outlineOpen}
-                aria-hidden={!outlineOpen}
-                style={{ width: outlineOpen ? outlineWidth : 0 }}
+                className="sticky left-0 z-30 shrink-0 border-r bg-card"
+                style={{ width: outlineWidth }}
+                data-timeline-outline
               >
                 <div className="sticky top-0 z-30 h-12 border-b bg-card px-4 py-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                   Goal / Task
                 </div>
-                {rows.map((row) =>
-                  row.kind === 'goal' ? (
-                    <button
-                      type="button"
-                      key={`left-${row.goal.id}`}
-                      data-timeline-goal={
-                        row.goal.id === 'inbox' ? '' : row.goal.id
-                      }
-                      data-timeline-kind="goal"
-                      data-timeline-id={row.goal.id}
-                      data-timeline-outline-target="true"
-                      onClick={() =>
-                        setCollapsed((current) => {
-                          const next = new Set(current);
-                          if (next.has(row.goal.id)) next.delete(row.goal.id);
-                          else next.add(row.goal.id);
-                          return next;
-                        })
-                      }
-                      className="flex h-14 w-full items-center gap-2 border-b bg-muted/30 px-3 text-left text-sm font-semibold"
-                      style={{ height: rowHeight(row) }}
-                    >
-                      {collapsed.has(row.goal.id) ? (
-                        <ChevronRight className="size-4" />
-                      ) : (
-                        <ChevronDown className="size-4" />
-                      )}
-                      <span
-                        className="size-2.5 rounded-full"
-                        style={{
-                          background: goalColorValue(row.goal.color_key),
-                        }}
-                      />
-                      {row.goal.title}
-                    </button>
-                  ) : (
-                    <div
-                      key={`left-${row.task.id}`}
-                      data-shortcut-item={outlineOpen ? true : undefined}
-                      data-timeline-goal={row.goalId ?? ''}
-                      data-timeline-kind="task"
-                      data-timeline-id={row.task.id}
-                      data-timeline-outline-target="true"
-                      className="flex h-[42px] w-full items-center border-b pr-3 text-left hover:bg-muted/40"
-                      style={{
-                        paddingLeft: 16 + row.depth * 16,
-                        height: rowHeight(row),
-                      }}
-                    >
-                      {row.hasChildren ? (
+                <div
+                  className="relative"
+                  style={{ height: layout.totalHeight }}
+                >
+                  {renderedRows.map((row) =>
+                    row.goal ? (
+                      <div
+                        key={row.key}
+                        data-timeline-select={`goal:${row.goal.id}`}
+                        {...dropAttributes(row)}
+                        className={`absolute left-0 flex w-full items-center gap-2 border-b bg-muted/30 px-3 ${dropId === row.key ? 'border-t-2 border-t-primary' : ''}`}
+                        style={{ top: row.top, height: row.height }}
+                      >
                         <button
                           type="button"
-                          data-shortcut-action="collapse"
-                          className="flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
                           disabled={!!query.trim()}
-                          aria-label={`${collapsedTasks.has(row.task.id) && !query.trim() ? 'Expand' : 'Collapse'} ${row.task.title}`}
+                          aria-label={`${collapsed.has(row.goal.id) ? 'Expand' : 'Collapse'} ${row.goal.title}`}
                           aria-expanded={
-                            !!query.trim() || !collapsedTasks.has(row.task.id)
+                            !!query.trim() || !collapsed.has(row.goal.id)
                           }
-                          title={
-                            query.trim()
-                              ? 'Clear search to collapse this branch'
-                              : undefined
-                          }
-                          onClick={() =>
-                            setCollapsedTasks((current) => {
-                              const next = new Set(current);
-                              if (next.has(row.task.id))
-                                next.delete(row.task.id);
-                              else next.add(row.task.id);
-                              return next;
-                            })
-                          }
+                          className="flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+                          onClick={() => toggleGoal(row.goal!.id)}
                         >
-                          {collapsedTasks.has(row.task.id) && !query.trim() ? (
+                          {collapsed.has(row.goal.id) && !query.trim() ? (
                             <ChevronRight className="size-4" />
                           ) : (
                             <ChevronDown className="size-4" />
                           )}
                         </button>
-                      ) : (
-                        <span className="size-6 shrink-0" />
-                      )}
-                      <button
-                        type="button"
-                        className="flex h-full min-w-0 flex-1 items-center text-left"
-                        data-shortcut-action="edit"
-                        onClick={() => openInspector('task', row.task.id)}
-                      >
                         <span
-                          className="block min-w-0 truncate text-xs font-semibold"
-                          title={row.task.title}
+                          className="size-2.5 shrink-0 rounded-full"
+                          style={{
+                            background: goalColorValue(row.goal.color_key),
+                          }}
+                        />
+                        <button
+                          type="button"
+                          data-timeline-focus={`goal:${row.goal.id}`}
+                          className="min-w-0 flex-1 truncate text-left text-sm font-semibold"
+                          title={row.goal.title}
+                          onClick={() => {
+                            if (row.goal!.id === 'inbox') toggleGoal('inbox');
+                            else
+                              openPlanningEditor({
+                                kind: 'goal',
+                                id: row.goal!.id,
+                              });
+                          }}
                         >
-                          {row.task.title}
-                        </span>
-                      </button>
-                      <TaskLink task={row.task} />
-                    </div>
-                  ),
-                )}
-                {outlineOpen ? (
-                  <hr
-                    aria-orientation="vertical"
-                    aria-label="Resize timeline outline"
-                    className="absolute inset-y-0 right-0 z-40 h-auto w-2 cursor-ew-resize touch-none border-0 hover:bg-primary/20"
-                    onPointerDown={(event) => {
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                      outlineResizeRef.current = {
-                        pointerId: event.pointerId,
-                        startX: event.clientX,
-                        width: outlineWidth,
-                      };
-                    }}
-                    onPointerMove={(event) => {
-                      const resizing = outlineResizeRef.current;
-                      if (!resizing || resizing.pointerId !== event.pointerId)
-                        return;
-                      setOutlineWidth(
+                          {row.goal.title}
+                        </button>
+                      </div>
+                    ) : (
+                      row.tasks.map((plan) => {
+                        const task = plan.row.task,
+                          guides = tree.get(task.id) ?? [];
+                        return (
+                          <div
+                            key={row.key}
+                            data-shortcut-item
+                            data-timeline-select={`task:${task.id}`}
+                            {...dropAttributes(row, plan)}
+                            className={`absolute left-0 flex w-full items-center border-b pr-2 hover:bg-muted/40 ${dropId === row.key ? 'border-t-2 border-t-primary' : ''}`}
+                            style={{
+                              top: row.top,
+                              height: row.height,
+                              paddingLeft: 16 + (plan.row.depth + 1) * 20,
+                            }}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="pointer-events-none absolute inset-y-0 left-4"
+                            >
+                              {guides.map((last, level) =>
+                                last && level < guides.length - 1 ? null : (
+                                  <span
+                                    key={level}
+                                    className="absolute top-0 w-5"
+                                    style={{
+                                      left: level * 20,
+                                      height:
+                                        level === guides.length - 1 && last
+                                          ? '50%'
+                                          : '100%',
+                                      borderLeft:
+                                        '1px solid color-mix(in srgb, var(--foreground) 30%, transparent)',
+                                    }}
+                                  >
+                                    {level === guides.length - 1 ? (
+                                      <span
+                                        className="absolute left-0 top-1/2 w-4 border-t"
+                                        style={{
+                                          top: last ? '100%' : '50%',
+                                          borderColor:
+                                            'color-mix(in srgb, var(--foreground) 30%, transparent)',
+                                        }}
+                                      />
+                                    ) : null}
+                                  </span>
+                                ),
+                              )}
+                            </span>
+                            {plan.row.hasChildren ? (
+                              <button
+                                type="button"
+                                disabled={!!query.trim()}
+                                className="relative flex size-6 shrink-0 items-center justify-center rounded hover:bg-muted"
+                                aria-label={`${collapsedTasks.has(task.id) && !query.trim() ? 'Expand' : 'Collapse'} ${task.title}`}
+                                aria-expanded={
+                                  !!query.trim() || !collapsedTasks.has(task.id)
+                                }
+                                onClick={() => toggleTask(task.id)}
+                              >
+                                {collapsedTasks.has(task.id) &&
+                                !query.trim() ? (
+                                  <ChevronRight className="size-4" />
+                                ) : (
+                                  <ChevronDown className="size-4" />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="size-6 shrink-0" />
+                            )}
+                            <button
+                              type="button"
+                              data-timeline-focus={`task:${task.id}`}
+                              className={`h-full min-w-0 flex-1 truncate text-left text-xs ${plan.row.hasChildren ? 'font-semibold' : 'font-medium'}`}
+                              title={task.title}
+                              onClick={() =>
+                                openPlanningEditor({
+                                  kind: 'task',
+                                  id: task.id,
+                                })
+                              }
+                            >
+                              {task.title}
+                            </button>
+                            <TaskLink task={task} />
+                          </div>
+                        );
+                      })
+                    ),
+                  )}
+                </div>
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize timeline outline"
+                  tabIndex={0}
+                  aria-valuenow={outlineWidth}
+                  aria-valuemin={220}
+                  aria-valuemax={360}
+                  className="absolute inset-y-0 right-0 z-40 h-auto w-2 cursor-ew-resize touch-none border-0 hover:bg-primary/20"
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === 'ArrowLeft' ||
+                      event.key === 'ArrowRight'
+                    ) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setOutlineWidth((width) =>
                         Math.min(
                           360,
                           Math.max(
                             220,
-                            resizing.width + event.clientX - resizing.startX,
+                            width + (event.key === 'ArrowRight' ? 10 : -10),
                           ),
                         ),
                       );
-                    }}
-                    onPointerUp={(event) => {
-                      if (
-                        outlineResizeRef.current?.pointerId === event.pointerId
-                      )
-                        outlineResizeRef.current = null;
-                    }}
-                    onPointerCancel={(event) => {
-                      if (
-                        outlineResizeRef.current?.pointerId === event.pointerId
-                      )
-                        outlineResizeRef.current = null;
-                    }}
-                  />
-                ) : null}
-              </div>
-              <div
-                className="relative shrink-0 overflow-clip"
-                style={{ width: chartWidth }}
-                onPointerMove={pointerMove}
-                onPointerUp={(event) => void pointerUp(event)}
-                onPointerCancel={(event) => {
-                  if (
-                    event.pointerId !==
-                    (dragRef.current ?? createRef.current)?.pointerId
-                  )
-                    return;
-                  clearQueuedPreview();
-                  dragRef.current = null;
-                  createRef.current = null;
-                  setPreview(null);
-                }}
-              >
-                <div
-                  className="sticky top-0 z-20 h-12 border-b bg-card"
-                  style={{
-                    backgroundImage: `repeating-linear-gradient(to right,transparent 0,transparent ${dayWidth - 1}px,var(--border) ${dayWidth - 1}px,var(--border) ${dayWidth}px)`,
+                    }
                   }}
-                >
-                  {visibleDays
-                    .filter(
-                      (index) =>
-                        zoom === 'week' ||
-                        zoom === 'month' ||
-                        index % Math.max(1, Math.round(90 / dayWidth)) === 0,
-                    )
-                    .map((index) => (
-                      <span
-                        key={index}
-                        className="absolute top-1 text-center text-[9px] text-muted-foreground"
-                        title={[
-                          addDays(range.start, index).toLocaleDateString(
-                            undefined,
-                            {
-                              weekday: 'long',
-                              year: 'numeric',
-                              month: 'long',
-                              day: 'numeric',
-                            },
-                          ),
-                          ...holidays
-                            .filter(
-                              (holiday) =>
-                                holiday.starts_on <=
-                                  dateKey(addDays(range.start, index)) &&
-                                holiday.ends_on >=
-                                  dateKey(addDays(range.start, index)),
-                            )
-                            .map((holiday) => holiday.title),
-                        ].join('\n')}
-                        style={{
-                          left: index * dayWidth,
-                          width:
-                            zoom === 'week' || zoom === 'month' ? dayWidth : 90,
-                        }}
-                      >
-                        {zoom === 'week' || zoom === 'month' ? (
-                          <>
-                            <span className="block text-[8px]">
-                              {
-                                ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][
-                                  addDays(range.start, index).getDay()
-                                ]
-                              }
-                            </span>
-                            <strong className="block">
-                              {addDays(range.start, index).getDate()}
-                            </strong>
-                            {zoom === 'week' ||
-                            addDays(range.start, index).getDate() === 1 ? (
-                              <small>
-                                {addDays(range.start, index).toLocaleDateString(
-                                  undefined,
-                                  { month: 'short' },
-                                )}
-                              </small>
-                            ) : null}
-                          </>
-                        ) : (
-                          addDays(range.start, index).toLocaleDateString(
-                            undefined,
-                            { month: 'short', day: 'numeric' },
-                          )
-                        )}
-                      </span>
-                    ))}
-                </div>
-                {visibleDays.map((index) => {
-                  const day = addDays(range.start, index);
-                  const key = dateKey(day);
-                  const holiday = holidays.find(
-                    (item) => item.starts_on <= key && item.ends_on >= key,
-                  );
-                  if (!holiday && day.getDay() !== 0 && day.getDay() !== 6)
-                    return null;
-                  return (
-                    <div
-                      key={`off-${key}`}
-                      className={`pointer-events-none absolute bottom-0 top-12 ${holiday ? 'bg-amber-500/10' : 'bg-foreground/5'}`}
-                      style={{ left: index * dayWidth, width: dayWidth }}
-                    />
-                  );
-                })}
-                {rows.map((row) => {
-                  const plan = entityPlan(row);
-                  const left = plan.start
-                    ? daysBetween(dateKey(range.start), plan.start) * dayWidth
-                    : 0;
-                  const width =
-                    plan.start && plan.end
-                      ? Math.max(
-                          10,
-                          (daysBetween(plan.start, plan.end) + 1) * dayWidth,
-                        )
-                      : 0;
-                  const baseColor =
-                    row.kind === 'goal'
-                      ? goalColorValue(row.goal.color_key)
-                      : row.goalId
-                        ? goalColorValue(
-                            workspace.goals.find(
-                              (goal) => goal.id === row.goalId,
-                            )?.color_key,
-                          )
-                        : neutralChecklistColor;
-                  const color =
-                    row.kind === 'goal'
-                      ? baseColor
-                      : `color-mix(in srgb, ${baseColor} ${row.depth > 0 ? 58 : 72}%, var(--card))`;
-                  const milestones = rowMilestones(row);
-                  const clusters = clusterMilestones(milestones, dayWidth);
-                  return (
-                    <div
-                      key={`chart-${row.kind === 'goal' ? row.goal.id : row.task.id}`}
-                      data-shortcut-item={outlineOpen ? undefined : true}
-                      data-timeline-goal={
-                        row.kind === 'goal'
-                          ? row.goal.id === 'inbox'
-                            ? ''
-                            : row.goal.id
-                          : (row.goalId ?? '')
-                      }
-                      data-timeline-kind={row.kind}
-                      data-timeline-id={
-                        row.kind === 'goal' ? row.goal.id : row.task.id
-                      }
-                      className={`relative border-b ${row.kind === 'goal' ? 'h-14 bg-muted/20' : 'h-[42px]'}`}
+                  onPointerDown={(event) => {
+                    if (isFrozen) return;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    resizeRef.current = {
+                      pointerId: event.pointerId,
+                      x: event.clientX,
+                      width: outlineWidth,
+                    };
+                  }}
+                  onPointerMove={(event) => {
+                    const state = resizeRef.current;
+                    if (state?.pointerId === event.pointerId)
+                      setOutlineWidth(
+                        Math.min(
+                          360,
+                          Math.max(220, state.width + event.clientX - state.x),
+                        ),
+                      );
+                  }}
+                  onPointerUp={(event) => {
+                    if (resizeRef.current?.pointerId === event.pointerId)
+                      resizeRef.current = null;
+                  }}
+                  onPointerCancel={() => {
+                    resizeRef.current = null;
+                  }}
+                />
+              </div>
+            ) : null}
+            <div
+              ref={chartRef}
+              className="relative shrink-0"
+              style={{ width: chartWidth }}
+              onPointerMove={pointerMove}
+              onPointerUp={(event) => void pointerUp(event)}
+              onPointerCancel={cancelGesture}
+              onLostPointerCapture={() => {
+                if (
+                  !busyRef.current &&
+                  (dragRef.current || creationRef.current)
+                )
+                  cancelGesture();
+              }}
+            >
+              <div
+                className="sticky top-0 z-20 h-12 overflow-hidden border-b bg-card"
+                style={{ backgroundImage: gridBackground(dayWidth) }}
+              >
+                {visibleDays
+                  .filter(
+                    ({ offset }) =>
+                      zoom === 'week' ||
+                      zoom === 'month' ||
+                      offset % Math.max(1, Math.round(90 / dayWidth)) === 0,
+                  )
+                  .map(({ offset, day, title }) => (
+                    <span
+                      key={offset}
+                      title={title}
+                      className="absolute top-1 text-center text-[9px] text-muted-foreground"
                       style={{
-                        height: rowHeight(row),
-                        backgroundImage: `repeating-linear-gradient(to right,transparent 0,transparent ${dayWidth - 1}px,var(--border) ${dayWidth - 1}px,var(--border) ${dayWidth}px)`,
-                      }}
-                      onPointerDown={(event) => {
-                        if ((event.target as HTMLElement).closest('[data-bar]'))
-                          return;
-                        event.currentTarget.setPointerCapture(event.pointerId);
-                        createRef.current = {
-                          row,
-                          startX: event.clientX,
-                          pointerId: event.pointerId,
-                        };
+                        left: offset * dayWidth,
+                        width:
+                          zoom === 'week' || zoom === 'month' ? dayWidth : 90,
                       }}
                     >
-                      {row.kind === 'task' && !outlineOpen ? (
-                        <div
-                          data-bar
-                          className="absolute z-20"
-                          style={{
-                            left: Math.min(
-                              Math.max(left + 8, viewport.left + 8),
-                              viewport.left + viewport.width - 40,
-                            ),
-                            top: rowHeight(row) - 34,
-                          }}
-                        >
-                          <TaskLink
-                            task={row.task}
-                            className="bg-card/90 shadow-sm"
-                          />
-                        </div>
-                      ) : null}
-                      {plan.start && plan.end ? (
-                        <button
-                          type="button"
-                          data-bar
-                          aria-label={`Edit ${row.kind} ${row.kind === 'goal' ? row.goal.title : row.task.title}`}
-                          title={`${row.kind === 'goal' ? row.goal.title : row.task.title}\n${plan.start} → ${plan.end}${row.kind === 'task' ? `\nGoal: ${workspace.goals.find((goal) => goal.id === row.goalId)?.title ?? 'Inbox'}` : ''}`}
-                          className={`absolute touch-none rounded-md text-[10px] font-semibold shadow-sm will-change-transform hover:brightness-95 active:brightness-90 ${row.kind === 'goal' ? 'top-2.5 h-9 text-white' : 'top-[11px] h-5 text-foreground'}`}
-                          style={{
-                            top:
-                              rowHeight(row) - (row.kind === 'goal' ? 46 : 31),
-                            left,
-                            width,
-                            background: color,
-                            borderColor: baseColor,
-                          }}
-                          onPointerDown={(event) => {
-                            event.stopPropagation();
-                            event.currentTarget.setPointerCapture(
-                              event.pointerId,
-                            );
-                            dragRef.current = {
-                              kind: row.kind,
-                              id:
-                                row.kind === 'goal' ? row.goal.id : row.task.id,
-                              startX: event.clientX,
-                              startY: event.clientY,
-                              pointerId: event.pointerId,
-                              mode: 'move',
-                              start: plan.start!,
-                              end: plan.end!,
-                              activated: false,
-                            };
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== 'Enter' && event.key !== ' ')
-                              return;
-                            event.preventDefault();
-                            openInspector(
-                              row.kind,
-                              row.kind === 'goal' ? row.goal.id : row.task.id,
-                            );
-                          }}
-                        >
-                          <span
-                            className={`block truncate px-2 ${row.kind === 'goal' ? 'py-2.5' : 'leading-5'}`}
-                          >
-                            {row.kind === 'goal'
-                              ? row.goal.title
-                              : row.task.title}
+                      {zoom === 'week' || zoom === 'month' ? (
+                        <>
+                          <span className="block text-[8px]">
+                            {
+                              ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][
+                                day.getDay()
+                              ]
+                            }
                           </span>
-                          <span
-                            className="absolute inset-y-0 left-0 w-2 cursor-ew-resize"
-                            onPointerDown={(event) => {
-                              event.stopPropagation();
-                              dragRef.current = {
-                                kind: row.kind,
-                                id:
-                                  row.kind === 'goal'
-                                    ? row.goal.id
-                                    : row.task.id,
-                                startX: event.clientX,
-                                pointerId: event.pointerId,
-                                mode: 'resize-start',
-                                start: plan.start!,
-                                end: plan.end!,
-                                activated: false,
-                              };
-                              event.currentTarget.setPointerCapture(
-                                event.pointerId,
-                              );
-                            }}
-                          />
-                          <span
-                            className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-black/15"
-                            onPointerDown={(event) => {
-                              event.stopPropagation();
-                              dragRef.current = {
-                                kind: row.kind,
-                                id:
-                                  row.kind === 'goal'
-                                    ? row.goal.id
-                                    : row.task.id,
-                                startX: event.clientX,
-                                pointerId: event.pointerId,
-                                mode: 'resize-end',
-                                start: plan.start!,
-                                end: plan.end!,
-                                activated: false,
-                              };
-                              event.currentTarget.setPointerCapture(
-                                event.pointerId,
-                              );
-                            }}
-                          />
-                        </button>
-                      ) : row.kind === 'task' ? (
-                        <span className="absolute left-3 top-3.5 text-[10px] text-muted-foreground">
-                          Drag here to set Start date → Deadline
-                        </span>
-                      ) : null}
-                      {clusters.map((cluster) => {
-                        if (cluster.items.length > 1) {
-                          const important = cluster.items.filter(
-                            (item) => item.is_important,
-                          ).length;
-                          const label =
-                            row.kind === 'goal'
-                              ? row.goal.title
-                              : row.task.title;
-                          return (
-                            <button
-                              key={`cluster-${cluster.items[0].id}`}
-                              type="button"
-                              data-bar
-                              aria-label={`Open ${cluster.items.length} milestones for ${label}${important ? ` (${important} Important)` : ''}`}
-                              title={`${cluster.items.length} milestones · ${cluster.items[0].milestone_on} – ${cluster.items.at(-1)!.milestone_on}${important ? ` · ${important} Important` : ''}`}
-                              className={`absolute top-0.5 z-10 flex h-7 items-center justify-center gap-1 rounded-md border bg-card text-xs font-semibold shadow-sm hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${important ? 'border-2 border-foreground/70' : ''}`}
-                              style={{
-                                left:
-                                  daysBetween(
-                                    dateKey(range.start),
-                                    cluster.day,
-                                  ) * dayWidth,
-                                width: cluster.width,
-                              }}
-                              onPointerDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setMilestoneCluster({
-                                  ids: cluster.items.map((item) => item.id),
-                                  label,
-                                });
-                              }}
-                            >
-                              {important ? (
-                                <Star
-                                  aria-hidden="true"
-                                  className="size-4 fill-current"
-                                />
-                              ) : (
-                                <MilestoneIcon
-                                  aria-hidden="true"
-                                  className="size-4 fill-current"
-                                  style={{ color }}
-                                />
-                              )}
-                              <span>{cluster.items.length}</span>
-                            </button>
-                          );
-                        }
-                        const item = cluster.items[0];
-                        const day =
-                          preview?.kind === 'milestone' &&
-                          preview.id === item.id
-                            ? preview.start
-                            : item.milestone_on;
-                        const milestoneLeft =
-                          daysBetween(dateKey(range.start), day) * dayWidth;
-                        return (
+                          <strong className="block">{day.getDate()}</strong>
+                          {zoom === 'week' || day.getDate() === 1 ? (
+                            <small>
+                              {day.toLocaleDateString('en-US', {
+                                month: 'short',
+                              })}
+                            </small>
+                          ) : null}
+                        </>
+                      ) : (
+                        day.toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                        })
+                      )}
+                    </span>
+                  ))}
+              </div>
+              <div
+                className="relative"
+                style={{
+                  height: layout.totalHeight,
+                  backgroundImage: gridBackground(dayWidth),
+                }}
+              >
+                {visibleDays.map(({ offset, day, key, holiday }) =>
+                  holiday.length || day.getDay() === 0 || day.getDay() === 6 ? (
+                    <div
+                      key={key}
+                      className={`pointer-events-none absolute inset-y-0 ${holiday.length ? 'bg-amber-500/10' : 'bg-foreground/5'}`}
+                      style={{ left: offset * dayWidth, width: dayWidth }}
+                    />
+                  ) : null,
+                )}
+                {renderedRows.map((row) => (
+                  <div
+                    key={row.key}
+                    {...(outlineOpen || row.goal
+                      ? dropAttributes(row, row.tasks[0])
+                      : {})}
+                    className={`absolute left-0 w-full border-b ${row.goal ? 'bg-muted/20' : ''} ${dropId === row.key ? 'border-t-2 border-t-primary' : ''}`}
+                    style={{ top: row.top, height: row.height }}
+                    onPointerDown={(event) => startCreation(event, row)}
+                  >
+                    {row.goal ? (
+                      <>
+                        {renderBar(
+                          row,
+                          'goal',
+                          row.goal,
+                          goalPlans.get(row.goal.id) ?? {
+                            start: null,
+                            end: null,
+                          },
+                          goalColorValue(row.goal.color_key),
+                          goalColorValue(row.goal.color_key),
+                        )}
+                        {row.goal.id === 'inbox' ||
+                        !goalPlans.get(row.goal.id)?.start ||
+                        !goalPlans.get(row.goal.id)?.end ? (
                           <button
-                            data-bar
                             type="button"
-                            key={item.id}
-                            title={`${item.is_important ? '★ Important · ' : ''}${item.title}\n${item.milestone_on}\n${row.kind === 'goal' ? row.goal.title : row.task.title}${notes[item.id] ? `\n${notes[item.id]}` : ''}`}
-                            onMouseEnter={() => milestoneNotes(item.id)}
-                            onFocus={() => milestoneNotes(item.id)}
-                            aria-label={`Edit milestone ${item.title}${item.is_important ? ' (Important)' : ''}`}
-                            className={`absolute z-10 ${item.is_important ? 'flex h-7 items-center gap-1 rounded-md border-2 border-foreground/70 bg-card px-1 text-xs font-semibold shadow-sm' : 'grid size-6 place-items-center rounded-sm'} text-foreground hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary`}
-                            style={{
-                              left: milestoneLeft,
-                              top: 2,
-                              width: milestoneMarkerWidth(item),
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                openInspector('milestone', item.id);
-                              }
-                            }}
-                            onPointerDown={(event) => {
-                              event.stopPropagation();
-                              event.currentTarget.setPointerCapture(
-                                event.pointerId,
-                              );
-                              dragRef.current = {
-                                kind: 'milestone',
-                                id: item.id,
-                                startX: event.clientX,
-                                pointerId: event.pointerId,
-                                mode: 'move',
-                                start: item.milestone_on,
-                                end: item.milestone_on,
-                                activated: false,
-                              };
+                            data-bar
+                            data-timeline-select={`goal:${row.goal.id}`}
+                            data-timeline-focus={
+                              outlineOpen ? undefined : `goal:${row.goal.id}`
+                            }
+                            className="absolute top-3 text-xs font-semibold text-muted-foreground"
+                            style={{ left: viewport.left + 12 }}
+                            onClick={() => {
+                              if (row.goal!.id === 'inbox') toggleGoal('inbox');
+                              else
+                                openPlanningEditor({
+                                  kind: 'goal',
+                                  id: row.goal!.id,
+                                });
                             }}
                           >
-                            {item.is_important ? (
-                              <>
-                                <Star
-                                  aria-hidden="true"
-                                  className="size-5 shrink-0 fill-current"
-                                  style={{
-                                    color: milestoneColorValue(
-                                      item.color_key,
-                                      color,
-                                    ),
-                                  }}
-                                />
-                                <span className="min-w-0 truncate">
-                                  {item.title}
-                                </span>
-                              </>
-                            ) : (
-                              <MilestoneIcon
-                                aria-hidden="true"
-                                className="size-5 fill-current"
-                                style={{
-                                  color: milestoneColorValue(
-                                    item.color_key,
-                                    color,
-                                  ),
-                                }}
-                              />
-                            )}
+                            {row.goal.title}
                           </button>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
+                        ) : null}
+                        {renderMarkers(
+                          row,
+                          row.clusters,
+                          row.goal.title,
+                          goalColorValue(row.goal.color_key),
+                        )}
+                      </>
+                    ) : (
+                      row.tasks
+                        .filter(
+                          (plan) =>
+                            outlineOpen ||
+                            selection?.id === plan.row.task.id ||
+                            dragRef.current?.id === plan.row.task.id ||
+                            plan.milestones.some(
+                              (marker) => marker.id === dragRef.current?.id,
+                            ) ||
+                            plan.footprints.some(
+                              (piece) =>
+                                piece.right >= viewport.left - 240 &&
+                                piece.left <=
+                                  viewport.left + viewport.width + 240,
+                            ),
+                        )
+                        .map((plan) => {
+                          const task = plan.row.task,
+                            base = plan.row.goalId
+                              ? goalColorValue(
+                                  index.goalsById.get(plan.row.goalId)
+                                    ?.color_key,
+                                )
+                              : neutralChecklistColor;
+                          return (
+                            <div
+                              key={task.id}
+                              data-timeline-select={`task:${task.id}`}
+                              data-timeline-task={task.id}
+                            >
+                              {renderBar(
+                                row,
+                                'task',
+                                task,
+                                plan,
+                                `color-mix(in srgb, ${base} ${plan.row.depth > 0 ? 58 : 72}%, var(--card))`,
+                                base,
+                              )}
+                              {renderMarkers(
+                                row,
+                                plan.clusters,
+                                task.title,
+                                base,
+                              )}
+                              {!plan.start || !plan.end ? (
+                                <span
+                                  data-bar
+                                  className="pointer-events-none absolute top-3.5 text-[10px] text-muted-foreground"
+                                  style={{ left: viewport.left + 12 }}
+                                >
+                                  Drag here to set Start date → Deadline
+                                </span>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                    )}
+                  </div>
+                ))}
                 {todayLeft >= 0 && todayLeft <= chartWidth ? (
                   <span
-                    className="pointer-events-none absolute bottom-0 top-0 z-10 w-px bg-destructive"
+                    className="pointer-events-none absolute inset-y-0 z-10 w-px bg-destructive"
                     style={{ left: todayLeft }}
                   >
-                    <span className="absolute top-0 -translate-x-1/2 rounded bg-destructive px-1 text-[9px] text-white">
+                    <span className="absolute -top-12 -translate-x-1/2 rounded bg-destructive px-1 text-[9px] text-white">
                       Today
                     </span>
                   </span>
@@ -2102,327 +1914,148 @@ export function TimelinePanelV2() {
               </div>
             </div>
           </div>
-        </>
+        </div>
       )}
       <Dialog
-        open={Boolean(milestoneCluster)}
+        open={!!cluster}
         onOpenChange={(open) => {
-          if (!open) setMilestoneCluster(null);
+          if (!open) setCluster(null);
         }}
       >
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Milestones · {milestoneCluster?.label}</DialogTitle>
+            <DialogTitle>Milestones · {cluster?.label}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
-            {workspace.milestones
-              .filter(
-                (item) =>
-                  milestoneCluster?.ids.includes(item.id) &&
-                  (!importantOnly || item.is_important),
-              )
-              .sort(
-                (a, b) =>
-                  a.milestone_on.localeCompare(b.milestone_on) ||
-                  a.id.localeCompare(b.id),
-              )
-              .map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="flex w-full items-center gap-3 rounded-lg border p-3 text-left hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-                  onClick={() => {
-                    setMilestoneCluster(null);
-                    openInspector('milestone', item.id);
-                  }}
-                >
-                  {item.is_important ? (
-                    <Star
-                      aria-hidden="true"
-                      className="size-4 shrink-0 fill-current"
-                    />
-                  ) : (
-                    <MilestoneIcon
-                      aria-hidden="true"
-                      className="size-4 shrink-0"
-                    />
-                  )}
-                  <span className="min-w-0">
-                    <strong className="block break-words text-sm">
-                      {item.title}
-                    </strong>
-                    <small className="text-muted-foreground">
-                      {item.milestone_on}
-                      {item.is_important ? ' · Important' : ''}
-                    </small>
+            {cluster?.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left hover:bg-muted"
+                onClick={() => {
+                  setCluster(null);
+                  openPlanningEditor({ kind: 'milestone', id: item.id });
+                }}
+              >
+                {item.is_important ? (
+                  <Star className="size-4 shrink-0 fill-current" />
+                ) : (
+                  <Flag className="size-4 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <strong className="block break-words text-sm">
+                    {item.title}
+                  </strong>
+                  <span className="text-xs text-muted-foreground">
+                    {item.milestone_on}
                   </span>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    Edit
-                  </span>
-                </button>
-              ))}
+                </span>
+                <span className="text-xs font-semibold">Edit</span>
+              </button>
+            ))}
           </div>
         </DialogContent>
       </Dialog>
       <Dialog
-        open={Boolean(draft)}
-        onOpenChange={(open) => !open && setDraft(null)}
+        open={!!choice}
+        onOpenChange={(open) => {
+          if (!open) setChoice(null);
+        }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>
-              {draft?.id
-                ? `Edit ${draft.kind}`
-                : draft?.kind
-                  ? `New ${draft.kind}`
-                  : 'What are you planning?'}
-            </DialogTitle>
+            <DialogTitle>What are you planning?</DialogTitle>
           </DialogHeader>
-          {draft && !draft.kind ? (
-            <div className="grid gap-2 sm:grid-cols-3">
-              {(['goal', 'task', 'milestone'] as const).map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => {
-                    openPlanningEditor({
-                      kind,
-                      goalId: draft.goalId,
-                      taskId: draft.parentTaskId,
-                      date: draft.start,
-                      endDate: draft.end,
-                    });
-                    setDraft(null);
-                  }}
-                  className="rounded-xl border p-4 text-left capitalize hover:border-primary hover:bg-secondary"
-                >
-                  {kind}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {draft?.kind ? (
-            <form className="grid gap-4" onSubmit={saveDraft}>
-              <label className="text-xs font-semibold">
-                Title
-                <input
-                  required
-                  value={draft.title}
-                  onChange={(event) =>
-                    setDraft({ ...draft, title: event.target.value })
-                  }
-                  className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                />
-              </label>
-              {draft.kind === 'goal' ? (
-                <label className="text-xs font-semibold">
-                  Why this matters
-                  <textarea
-                    value={draft.description ?? ''}
-                    onChange={(event) =>
-                      setDraft({ ...draft, description: event.target.value })
-                    }
-                    className="mt-1 min-h-20 w-full rounded-lg border bg-background p-3"
-                  />
-                </label>
-              ) : null}
-              {draft.kind !== 'milestone' ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="text-xs font-semibold">
-                    Start
-                    <input
-                      type="date"
-                      min="2000-01-01"
-                      max="2200-12-31"
-                      value={draft.start}
-                      onChange={(event) =>
-                        setDraft({ ...draft, start: event.target.value })
-                      }
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                    />
-                  </label>
-                  <label className="text-xs font-semibold">
-                    Deadline
-                    <input
-                      type="date"
-                      min={draft.start}
-                      max="2200-12-31"
-                      value={draft.end}
-                      onChange={(event) =>
-                        setDraft({ ...draft, end: event.target.value })
-                      }
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                    />
-                  </label>
-                </div>
-              ) : (
-                <label className="text-xs font-semibold">
-                  Date
-                  <input
-                    type="date"
-                    min="2000-01-01"
-                    max="2200-12-31"
-                    value={draft.start}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        start: event.target.value,
-                        end: event.target.value,
-                      })
-                    }
-                    className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                  />
-                </label>
-              )}
-              {draft.kind !== 'goal' ? (
-                <label className="text-xs font-semibold">
-                  Goal
-                  <RelationSelect
-                    value={draft.goalId}
-                    onChange={(event) =>
-                      setDraft({ ...draft, goalId: event.target.value })
-                    }
-                    className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                  >
-                    <option value="">Inbox — no goal</option>
-                    {workspace.goals.map((goal) => (
-                      <option key={goal.id} value={goal.id}>
-                        {goal.title}
-                      </option>
-                    ))}
-                  </RelationSelect>
-                </label>
-              ) : null}
-              {draft.kind === 'milestone' ? (
-                <>
-                  <label className="flex items-center gap-2 text-xs font-semibold">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(draft.important)}
-                      onChange={(event) =>
-                        setDraft({ ...draft, important: event.target.checked })
-                      }
-                    />
-                    ★ Important
-                  </label>
-                  <label className="text-xs font-semibold">
-                    Color
-                    <select
-                      value={draft.colorKey ?? ''}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          colorKey: (event.target.value ||
-                            null) as GoalColor | null,
-                        })
-                      }
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                    >
-                      <option value="">Auto — inherit Goal/Task</option>
-                      {milestoneColors.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </>
-              ) : null}
-              {draft.kind === 'task' ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-xs font-semibold">
-                    Status
-                    <RelationSelect
-                      value={draft.statusId ?? ''}
-                      onChange={(event) =>
-                        setDraft({ ...draft, statusId: event.target.value })
-                      }
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3 capitalize"
-                    >
-                      {workspace.statuses.map((status) => (
-                        <option key={status.id} value={status.id}>
-                          {status.category.replaceAll('_', ' ')}
-                        </option>
-                      ))}
-                    </RelationSelect>
-                  </label>
-                  <label className="text-xs font-semibold">
-                    Priority
-                    <RelationSelect
-                      value={draft.priority ?? 'medium'}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          priority: event.target.value as Priority,
-                        })
-                      }
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3 capitalize"
-                    >
-                      {(['low', 'medium', 'high', 'urgent'] as Priority[]).map(
-                        (priority) => (
-                          <option key={priority} value={priority}>
-                            {priority}
-                          </option>
-                        ),
-                      )}
-                    </RelationSelect>
-                  </label>
-                  <label className="text-xs font-semibold sm:col-span-2">
-                    Link
-                    <input
-                      type="url"
-                      value={draft.linkUrl ?? ''}
-                      onChange={(event) =>
-                        setDraft({ ...draft, linkUrl: event.target.value })
-                      }
-                      placeholder="https://…"
-                      className="mt-1 h-10 w-full rounded-lg border bg-background px-3"
-                    />
-                  </label>
-                </div>
-              ) : null}
-              <DialogFooter>
-                {draft.id && draft.kind === 'milestone' ? (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    onClick={() => void removeMilestone()}
-                  >
-                    Delete milestone
-                  </Button>
-                ) : null}
-                <Button type="submit">Save</Button>
-              </DialogFooter>
-            </form>
-          ) : null}
+          <div className="grid gap-2 sm:grid-cols-3">
+            {(['goal', 'task', 'milestone'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className="rounded-xl border p-4 text-left capitalize hover:border-primary hover:bg-secondary"
+                onClick={() => {
+                  if (choice) openPlanningEditor({ kind, ...choice });
+                  setChoice(null);
+                }}
+              >
+                {kind}
+              </button>
+            ))}
+          </div>
         </DialogContent>
       </Dialog>
     </section>
   );
 }
-
-function makeTimelineRange(
-  start: Date,
-  workspace: TimelineWorkspace,
-  latestSeen: string,
-  zoom: Zoom,
-  extraDays: number,
-) {
-  const latest = latestTimelineDate(workspace, latestSeen);
-  const endLimit = daysBetween(dateKey(start), '2201-01-01');
-  const requestedDays =
-    Math.max(minimumDays[zoom], daysBetween(dateKey(start), latest) + 30) +
-    extraDays;
-  return { start, days: Math.min(endLimit, requestedDays) };
+function readPreference(key: string) {
+  try {
+    return typeof window === 'undefined'
+      ? null
+      : window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
-
+function writePreference(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* Session controls remain usable without storage. */
+  }
+}
+function toggleSet(old: Set<string>, id: string) {
+  const next = new Set(old);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+function gridBackground(width: number) {
+  return `repeating-linear-gradient(to right,transparent 0,transparent ${width - 1}px,var(--border) ${width - 1}px,var(--border) ${width}px)`;
+}
+function dropAttributes(row: TimelineLayoutRow, task?: TaskLayout) {
+  return {
+    'data-timeline-drop': row.key,
+    'data-timeline-kind': row.goal ? 'goal' : 'task',
+    'data-timeline-id': row.goal?.id ?? task?.row.task.id,
+    'data-timeline-goal': row.goal
+      ? row.goal.id === 'inbox'
+        ? ''
+        : row.goal.id
+      : (task?.row.goalId ?? ''),
+  };
+}
+function latestTimelineDate(workspace: TimelineWorkspace) {
+  return [
+    ...workspace.goals.map((goal) => goal.ends_on),
+    ...workspace.tasks.map(deadlineKey),
+    ...workspace.milestones.map((item) => item.milestone_on),
+  ].reduce<string>(
+    (last, day) => (day && day > last ? day : last),
+    dateKey(new Date()),
+  );
+}
+function timelineRangeStart(workspace: TimelineWorkspace) {
+  const earliest = [
+    ...workspace.goals.flatMap((goal) => [goal.starts_on, goal.ends_on]),
+    ...workspace.tasks.flatMap((task) => [
+      task.planned_start,
+      deadlineKey(task),
+    ]),
+    ...workspace.milestones.map((item) => item.milestone_on),
+  ].reduce<string>(
+    (first, day) => (day && day < first ? day : first),
+    dateKey(new Date()),
+  );
+  const start = shiftDateKey(earliest, -14);
+  return new Date(`${start < '2000-01-01' ? '2000-01-01' : start}T00:00:00`);
+}
 function filterTimelineRows(
-  rows: Row[],
+  rows: TimelineOutlineRow[],
   workspace: TimelineWorkspace,
   query: string,
 ) {
   if (!query.trim()) return rows;
-  const goals = new Set<string>(),
+  const index = indexTimeline(workspace),
+    goals = new Set<string>(),
     tasks = new Set<string>();
   for (const row of rows) {
     if (
@@ -2432,9 +2065,11 @@ function filterTimelineRows(
         { goal: row.goal.title },
         row.goal.title,
         row.goal.description,
-        ...workspace.milestones
-          .filter((mark) => !mark.task_id && mark.goal_id === row.goal.id)
-          .map((mark) => mark.title),
+        ...(
+          index.goalMilestones.get(
+            row.goal.id === 'inbox' ? null : row.goal.id,
+          ) ?? []
+        ).map((mark) => mark.title),
       )
     )
       goals.add(row.goal.id);
@@ -2443,13 +2078,13 @@ function filterTimelineRows(
       matchesPlanningSearch(
         query,
         {
-          goal: workspace.goals.find((goal) => goal.id === row.goalId)?.title,
+          goal: index.goalsById.get(row.goalId ?? '')?.title,
           task: row.task.title,
         },
         row.task.title,
-        ...workspace.milestones
-          .filter((mark) => mark.task_id === row.task.id)
-          .map((mark) => mark.title),
+        ...(index.taskMilestones.get(row.task.id) ?? []).map(
+          (mark) => mark.title,
+        ),
       )
     )
       tasks.add(row.task.id);
@@ -2458,14 +2093,12 @@ function filterTimelineRows(
   for (const row of rows)
     if (row.kind === 'task' && tasks.has(row.task.id)) {
       contextGoals.add(row.goalId ?? 'inbox');
-      const visited = new Set<string>();
+      const seen = new Set<string>();
       let parent = row.task.parent_task_id;
-      while (parent && !visited.has(parent)) {
-        visited.add(parent);
+      while (parent && !seen.has(parent)) {
+        seen.add(parent);
         tasks.add(parent);
-        parent =
-          workspace.tasks.find((task) => task.id === parent)?.parent_task_id ??
-          null;
+        parent = index.tasksById.get(parent)?.parent_task_id ?? null;
       }
     }
   return rows.filter((row) =>
@@ -2474,48 +2107,28 @@ function filterTimelineRows(
       : tasks.has(row.task.id) || goals.has(row.goalId ?? 'inbox'),
   );
 }
-
-function timelineRangeStart(workspace: TimelineWorkspace) {
-  const dates = [
-    ...workspace.goals.flatMap((goal) => [goal.starts_on, goal.ends_on]),
-    ...workspace.tasks.flatMap((task) => [
-      task.planned_start,
-      deadlineKey(task),
-    ]),
-    ...workspace.milestones.map((item) => item.milestone_on),
-  ].filter(Boolean) as string[];
-  const earliest = [dateKey(new Date()), ...dates].sort((a, b) =>
-    a.localeCompare(b),
-  )[0];
-  const start = addDays(new Date(`${earliest}T00:00:00`), -14);
-  return start < new Date('2000-01-01T00:00:00')
-    ? new Date('2000-01-01T00:00:00')
-    : start;
-}
-
-function applyTimelinePlan(
+function applyPlan(
   workspace: TimelineWorkspace,
-  state: Drag,
-  next: Preview,
+  plan: Preview,
 ): TimelineWorkspace {
-  if (state.kind === 'goal')
+  if (plan.kind === 'goal')
     return {
       ...workspace,
       goals: workspace.goals.map((goal) =>
-        goal.id === state.id
-          ? { ...goal, starts_on: next.start, ends_on: next.end }
+        goal.id === plan.id
+          ? { ...goal, starts_on: plan.start, ends_on: plan.end }
           : goal,
       ),
     };
-  if (state.kind === 'task')
+  if (plan.kind === 'task')
     return {
       ...workspace,
       tasks: workspace.tasks.map((task) =>
-        task.id === state.id
+        task.id === plan.id
           ? {
               ...task,
-              planned_start: next.start,
-              due_at: deadlineIso(next.end),
+              planned_start: plan.start,
+              due_at: deadlineIso(plan.end),
               planned_end: null,
             }
           : task,
@@ -2523,10 +2136,8 @@ function applyTimelinePlan(
     };
   return {
     ...workspace,
-    milestones: workspace.milestones.map((milestone) =>
-      milestone.id === state.id
-        ? { ...milestone, milestone_on: next.start }
-        : milestone,
+    milestones: workspace.milestones.map((item) =>
+      item.id === plan.id ? { ...item, milestone_on: plan.start } : item,
     ),
   };
 }

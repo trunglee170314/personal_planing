@@ -11,7 +11,7 @@ import {
   vietnamDay,
 } from '../lib/selected-dates.mjs';
 import { reviseSeries } from './series-edit.mjs';
-import { repeatStarts, isRepeatStart } from '../lib/repeat-series.mjs';
+import { isRepeatStart } from '../lib/repeat-series.mjs';
 import { installLocalUndo } from './undo.mjs';
 import { LocalSystemMaps } from './system-maps.mjs';
 import {
@@ -447,7 +447,7 @@ export class LocalDatabase {
       .all();
     const nextTaskOrder = new Map();
     for (const row of taskOrder) {
-      const group = `${row.goal_id ?? ''}:${row.parent_task_id ?? ''}`;
+      const group = `${String(row.goal_id ?? '')}:${String(row.parent_task_id ?? '')}`;
       nextTaskOrder.set(
         group,
         Math.max(nextTaskOrder.get(group) ?? 0, Number(row.sort_order) || 0),
@@ -458,7 +458,7 @@ export class LocalDatabase {
     );
     for (const row of taskOrder) {
       if (row.sort_order != null) continue;
-      const group = `${row.goal_id ?? ''}:${row.parent_task_id ?? ''}`;
+      const group = `${String(row.goal_id ?? '')}:${String(row.parent_task_id ?? '')}`;
       const position = (nextTaskOrder.get(group) ?? 0) + 1024;
       nextTaskOrder.set(group, position);
       setTaskOrder.run(position, row.id);
@@ -1714,7 +1714,8 @@ export class LocalDatabase {
         count < 1000 &&
         vietnamDayNumber(
           addVietnamMonths(session.starts_at, (count + 1) * step),
-        ) <= vietnamDayNumber(`${session.recurrence_until}T12:00:00+07:00`)
+        ) <=
+          vietnamDayNumber(`${String(session.recurrence_until)}T12:00:00+07:00`)
       )
         count++;
       const lastDay = vietnamDayNumber(
@@ -1771,7 +1772,7 @@ export class LocalDatabase {
             state.end,
             now(),
             calendarEntryId,
-            `tmp:${state.old}`,
+            `tmp:${String(state.old)}`,
           );
       this.syncTaskChecklistProgress(session.task_id);
       this.commitTransaction();
@@ -1844,7 +1845,7 @@ export class LocalDatabase {
       .get(taskId)?.goal_id;
     this.syncGoalProgress(goalId);
   }
-  getTimelineWorkspace() {
+  getTimelineWorkspace({ includeChecklistCounts = true } = {}) {
     return {
       statuses: this.listStatuses(),
       goals: this.listGoals('active').sort(
@@ -1860,6 +1861,7 @@ export class LocalDatabase {
         .all()
         .map((row) => {
           const task = this.normalizeTask(row);
+          if (!includeChecklistCounts) return task;
           const summary = this.checklistOccurrenceSummary(row.id);
           return {
             ...task,
