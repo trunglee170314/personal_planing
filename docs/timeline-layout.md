@@ -29,6 +29,14 @@ Titles and inline links remain inside the visible portion of their own bars;
 very narrow linked bars expose their link on hover or keyboard focus. Full titles
 remain available through tooltips and accessible names.
 
+Title X positions use a zero-width native CSS sticky carrier, clipped to the bar
+with `overflow: clip`. This avoids waiting for React while the browser scrolls,
+and avoids pushing the title prefix left near the end of a bar. A cached DOM
+registry updates only available text width, link fit and popup alignment using
+the exact scroll offset. It does not read per-bar DOM geometry. Twenty-four
+pixels are required for the inline link plus its gap; narrower visible fragments
+retain the hover/focus popup.
+
 ## Viewport and input
 
 Row offsets exclude the 48-pixel sticky header. Binary search selects the visible
@@ -36,6 +44,12 @@ vertical window with overscan. Compact rows also omit horizontally offscreen
 Task groups while retaining any group with a visible bar or milestone. Selected
 and pointer-captured items stay mounted. Keyboard navigation operates on the
 layout model, scrolls to the next item, then focuses its rendered control.
+React viewport snapshots use 128-pixel horizontal and 80-pixel vertical buckets;
+native label movement and pointer calculations still use exact scroll positions.
+Horizontal overscan is at least 240 pixels at every zoom, including Year, where
+30 days alone would leave gaps before the next viewport bucket updates. Exact
+previous scroll offsets distinguish horizontal movement from vertical scrolling
+when automatically extending the date range.
 
 The toolbar lives below the heading and contains Today, Important only, search,
 outline visibility and Week/Month/Quarter/Year. Ctrl+wheel over the board uses a

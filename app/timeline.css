@@ -1,0 +1,44 @@
+/* A zero-width native sticky carrier keeps the title's leading edge steady even
+   near the end of a long bar. Clip only the label layer, not its hover popup.
+   overflow: clip deliberately avoids creating an intermediate scrollport. */
+.timeline-label-clip {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  pointer-events: none;
+}
+
+.timeline-sticky-anchor {
+  position: sticky;
+  left: var(--timeline-sticky-inset, 8px);
+  margin-left: 8px;
+  width: 0;
+  height: 100%;
+  pointer-events: none;
+}
+
+.timeline-label-content {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: var(--timeline-label-width, 0px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.timeline-bar[data-timeline-link-fit='false'] .timeline-label-inline-link {
+  display: none;
+}
+
+.timeline-bar[data-timeline-link-fit='true'] .timeline-narrow-popup {
+  display: none !important;
+}
+
+.timeline-pinned-anchor {
+  position: sticky;
+  left: calc(var(--timeline-sticky-inset, 8px) + 4px);
+  margin-left: 12px;
+  width: 0;
+}

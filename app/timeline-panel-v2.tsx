@@ -1,4 +1,5 @@
 'use client';
+import './timeline.css';
 /* oxlint-disable react/react-compiler -- Pointer capture, virtual focus and frozen drag layouts bridge imperative browser state. */
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- The focusable resizable separator is an interactive widget, rather than a static hr. */
 import {
@@ -73,9 +74,17 @@ import {
   timelineEdgeSpeed,
   timelineWheelStep,
   timelineZoomScroll,
-  visibleTimelineLabel,
   type TimelineZoom,
 } from '@/lib/timeline-interactions';
+import {
+  collectTimelineLabels,
+  syncTimelineLabels,
+  type TimelineLabel,
+} from '@/lib/timeline-labels';
+import {
+  quantizeTimelineViewport,
+  timelineDayWindow,
+} from '@/lib/timeline-scroll';
 import { matchesPlanningSearch } from '@/lib/planning-context';
 import { timelineTodayScrollLeft } from '@/lib/planning-viewport';
 import { guardPlanningPointer } from '@/lib/pointer-actions';
@@ -169,6 +178,10 @@ export function TimelinePanelV2() {
     height: 600,
   });
   const boardRef = useRef<HTMLDivElement>(null);
+  const renderViewportRef = useRef(viewport);
+  const labelRegistryRef = useRef<TimelineLabel[]>([]);
+  const outlinePixelsRef = useRef(outlineOpen ? outlineWidth : 0);
+  const previousScrollLeftRef = useRef(0);
   const chartRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const creationRef = useRef<Creation | null>(null);
@@ -441,21 +454,41 @@ export function TimelinePanelV2() {
   function updateViewport() {
     const board = boardRef.current;
     if (!board) return;
-    const next = {
+    const next = quantizeTimelineViewport({
       left: board.scrollLeft,
       top: board.scrollTop,
       width: board.clientWidth,
       height: board.clientHeight,
-    };
-    setViewport((old) =>
+    });
+    syncTimelineLabels(
+      labelRegistryRef.current,
+      board.scrollLeft,
+      board.clientWidth,
+      outlinePixelsRef.current,
+    );
+    const old = renderViewportRef.current;
+    if (
       old.left === next.left &&
       old.top === next.top &&
       old.width === next.width &&
       old.height === next.height
-        ? old
-        : next,
-    );
+    )
+      return;
+    renderViewportRef.current = next;
+    setViewport(next);
   }
+  useLayoutEffect(() => {
+    outlinePixelsRef.current = outlineOpen ? outlineWidth : 0;
+    const board = boardRef.current;
+    if (!board) return;
+    labelRegistryRef.current = collectTimelineLabels(board);
+    syncTimelineLabels(
+      labelRegistryRef.current,
+      board.scrollLeft,
+      board.clientWidth,
+      outlinePixelsRef.current,
+    );
+  });
   function queueViewport() {
     if (viewportFrameRef.current !== null) return;
     viewportFrameRef.current = window.requestAnimationFrame(() => {
@@ -1098,11 +1131,12 @@ export function TimelinePanelV2() {
     };
   }
   const visibleDays = useMemo(() => {
-    const first = Math.max(0, Math.floor(viewport.left / dayWidth) - 30),
-      end = Math.min(
-        rangeDays,
-        Math.ceil((viewport.left + viewport.width) / dayWidth) + 30,
-      );
+    const { first, end } = timelineDayWindow(
+      rangeDays,
+      dayWidth,
+      viewport.left,
+      viewport.width,
+    );
     return Array.from({ length: Math.max(0, end - first) }, (_, i) => {
       const offset = first + i,
         day = addDays(origin, offset),
@@ -1149,12 +1183,6 @@ export function TimelinePanelV2() {
     if (!plan.start || !plan.end || (kind === 'goal' && entity.id === 'inbox'))
       return null;
     const { left, width } = barGeometry(plan.start, plan.end, kind === 'task');
-    const label = visibleTimelineLabel(
-      left,
-      width,
-      viewport.left,
-      viewport.width - (outlineOpen ? outlineWidth : 0),
-    );
     const showTitle = kind === 'goal' || !outlineOpen,
       top = row.height - (kind === 'goal' ? 46 : 31),
       task = kind === 'task' ? (entity as Task) : null;
@@ -1164,7 +1192,11 @@ export function TimelinePanelV2() {
         key={`bar:${entity.id}`}
         data-bar
         data-timeline-select={`${kind}:${entity.id}`}
-        className="group/task absolute"
+        data-timeline-label={showTitle ? true : undefined}
+        data-timeline-label-left={left}
+        data-timeline-label-width={width}
+        data-timeline-link-fit="false"
+        className="timeline-bar group/task absolute"
         style={{ left, top, width, height: kind === 'goal' ? 36 : 22 }}
       >
         <button
@@ -1211,42 +1243,43 @@ export function TimelinePanelV2() {
             }
           />
         </button>
-        {showTitle && label ? (
+        {showTitle ? (
           <div
-            className="pointer-events-none absolute inset-y-0 flex items-center gap-1 overflow-hidden"
-            style={{
-              left: label.left - left,
-              width: label.width,
-              color: kind === 'goal' ? 'white' : undefined,
-            }}
+            className="timeline-label-clip"
+            style={{ color: kind === 'goal' ? 'white' : undefined }}
           >
-            <span
-              aria-hidden="true"
-              className="min-w-0 flex-1 truncate text-[10px] font-semibold"
-            >
-              {entity.title}
-            </span>
-            {task && label.width >= 20 && safeTaskLink(task) ? (
-              <TaskLink
-                task={task}
-                className="pointer-events-auto relative z-30 !min-h-5 !min-w-5 !p-0.5"
-              />
-            ) : null}
+            <div className="timeline-sticky-anchor">
+              <div className="timeline-label-content">
+                <span
+                  aria-hidden="true"
+                  className="min-w-0 flex-1 truncate text-[10px] font-semibold"
+                >
+                  {entity.title}
+                </span>
+                {task && safeTaskLink(task) ? (
+                  <TaskLink
+                    task={task}
+                    className="timeline-label-inline-link pointer-events-auto relative z-30 !min-h-5 !min-w-5 !p-0.5"
+                  />
+                ) : null}
+              </div>
+            </div>
           </div>
         ) : null}
-        {task &&
-        !outlineOpen &&
-        safeTaskLink(task) &&
-        (!label || label.width < 20) ? (
-          <div
-            data-bar
-            className="absolute top-full z-40 hidden w-64 items-center gap-2 rounded-lg border bg-popover p-2 text-popover-foreground shadow-md group-hover/task:flex group-focus-within/task:flex"
-            style={{ left: Math.max(0, viewport.left - left + 8) }}
-          >
-            <span className="min-w-0 flex-1 break-words text-xs">
-              {task.title}
-            </span>
-            <TaskLink task={task} />
+        {task && !outlineOpen && safeTaskLink(task) ? (
+          <div className="timeline-sticky-anchor z-40">
+            <div
+              data-bar
+              className="timeline-narrow-popup pointer-events-auto absolute top-full z-40 hidden w-64 items-center gap-2 rounded-lg border bg-popover p-2 text-popover-foreground shadow-md group-hover/task:flex group-focus-within/task:flex"
+              style={{
+                transform: 'translateX(var(--timeline-popup-shift, 0px))',
+              }}
+            >
+              <span className="min-w-0 flex-1 break-words text-xs">
+                {task.title}
+              </span>
+              <TaskLink task={task} />
+            </div>
           </div>
         ) : null}
       </div>
@@ -1455,15 +1488,30 @@ export function TimelinePanelV2() {
           ref={boardRef}
           className="mt-3 h-[max(480px,calc(100dvh-250px))] overflow-auto rounded-2xl border bg-card shadow-sm"
           data-timeline-board
+          style={
+            {
+              '--timeline-sticky-inset': `${(outlineOpen ? outlineWidth : 0) + 8}px`,
+            } as React.CSSProperties
+          }
           onScroll={() => {
-            queueViewport();
             const board = boardRef.current;
-            if (!board || isFrozen || pendingScroll.current !== null) return;
-            if (board.scrollLeft < 2 && viewport.left !== board.scrollLeft)
-              extendEarlier();
+            if (!board) return;
+            syncTimelineLabels(
+              labelRegistryRef.current,
+              board.scrollLeft,
+              board.clientWidth,
+              outlinePixelsRef.current,
+            );
+            queueViewport();
+            const horizontal =
+              previousScrollLeftRef.current !== board.scrollLeft;
+            previousScrollLeftRef.current = board.scrollLeft;
+            if (!horizontal || isFrozen || pendingScroll.current !== null)
+              return;
+            if (board.scrollLeft < 2) extendEarlier();
             else if (
-              board.scrollLeft + board.clientWidth > board.scrollWidth - 80 &&
-              viewport.left !== board.scrollLeft
+              board.scrollLeft + board.clientWidth >
+              board.scrollWidth - 80
             )
               extendLater();
           }}
@@ -1813,26 +1861,28 @@ export function TimelinePanelV2() {
                         {row.goal.id === 'inbox' ||
                         !goalPlans.get(row.goal.id)?.start ||
                         !goalPlans.get(row.goal.id)?.end ? (
-                          <button
-                            type="button"
-                            data-bar
-                            data-timeline-select={`goal:${row.goal.id}`}
-                            data-timeline-focus={
-                              outlineOpen ? undefined : `goal:${row.goal.id}`
-                            }
-                            className="absolute top-3 text-xs font-semibold text-muted-foreground"
-                            style={{ left: viewport.left + 12 }}
-                            onClick={() => {
-                              if (row.goal!.id === 'inbox') toggleGoal('inbox');
-                              else
-                                openPlanningEditor({
-                                  kind: 'goal',
-                                  id: row.goal!.id,
-                                });
-                            }}
-                          >
-                            {row.goal.title}
-                          </button>
+                          <div className="timeline-pinned-anchor">
+                            <button
+                              type="button"
+                              data-bar
+                              data-timeline-select={`goal:${row.goal.id}`}
+                              data-timeline-focus={
+                                outlineOpen ? undefined : `goal:${row.goal.id}`
+                              }
+                              className="absolute top-3 w-max text-xs font-semibold text-muted-foreground"
+                              onClick={() => {
+                                if (row.goal!.id === 'inbox')
+                                  toggleGoal('inbox');
+                                else
+                                  openPlanningEditor({
+                                    kind: 'goal',
+                                    id: row.goal!.id,
+                                  });
+                              }}
+                            >
+                              {row.goal.title}
+                            </button>
+                          </div>
                         ) : null}
                         {renderMarkers(
                           row,
@@ -1887,13 +1937,14 @@ export function TimelinePanelV2() {
                                 base,
                               )}
                               {!plan.start || !plan.end ? (
-                                <span
-                                  data-bar
-                                  className="pointer-events-none absolute top-3.5 text-[10px] text-muted-foreground"
-                                  style={{ left: viewport.left + 12 }}
-                                >
-                                  Drag here to set Start date → Deadline
-                                </span>
+                                <div className="timeline-pinned-anchor">
+                                  <span
+                                    data-bar
+                                    className="pointer-events-none absolute top-3.5 w-max text-[10px] text-muted-foreground"
+                                  >
+                                    Drag here to set Start date → Deadline
+                                  </span>
+                                </div>
                               ) : null}
                             </div>
                           );
