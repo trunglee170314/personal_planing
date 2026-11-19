@@ -22,6 +22,15 @@ and a distant milestone remains available. Markers from different Tasks are
 never clustered together to bypass collision checks. Goal boundaries remain
 separate, and packing never edits dates, order or relationships.
 
+Normal flags use a zoom-aware width: 24 px in Week, 14 px in Month, and a readable
+10 px minimum in Quarter/Year. They are centered within their day when space
+allows. Month flags therefore fit both the first and last day of a Task without
+blocking an adjacent phase through an oversized invisible footprint. Important
+labels and count clusters retain their full widths. Rendering, culling and
+packing consume the same cluster width and day offset. If forming a wider count
+creates a new collision to its left, clustering merges backward until the lane
+is clear. Overview scales can still require separate lanes for real collisions.
+
 Compact bars have a two-pixel inset on each end so adjacent date spans can share
 a lane. The ten-pixel minimum bar width still prevents tiny Tasks from visually
 overlapping at overview scales. The renderer uses the same dimensions as layout.
@@ -51,11 +60,26 @@ Horizontal overscan is at least 240 pixels at every zoom, including Year, where
 previous scroll offsets distinguish horizontal movement from vertical scrolling
 when automatically extending the date range.
 
-The toolbar lives below the heading and contains Today, Important only, search,
+The toolbar lives below the heading and contains Today, Milestones, Important only, search,
 outline visibility and Week/Month/Quarter/Year. Ctrl+wheel over the board uses a
 nonpassive listener, prevents browser zoom and keeps the date under the pointer
 anchored. Small wheel deltas accumulate and a 140 ms cooldown limits burst
 changes. Header weekdays, months and date tooltips use English.
+
+The Milestones dialog reads the full active workspace independently of the chart
+viewport, search, outline and Important filter. It provides This week, Next week,
+This month, Next month and All, plus its own search and Important filter. Weeks
+run Monday–Sunday and full calendar months use Vietnam time; All includes past
+dates. Archived/deleted owners are excluded, and an active Task whose Goal is
+unavailable follows the outline's Inbox fallback. Current Task–Goal links supply
+context rather than potentially stale milestone Goal fields.
+
+Go to date closes the dialog before revealing the owner's Goal and Task ancestor
+chain, clearing conflicting chart filters and scrolling to the marker. Unscheduled
+Tasks open the outline so their milestones remain reachable. Focus targets the
+rendered marker or its containing cluster after virtualization updates; dialog
+focus restoration is suppressed for navigation and shared-editor actions. Escape
+and Close retain normal focus restoration. These actions never change dates.
 
 Dragging supports edge scrolling with the scroll delta included in date
 calculation. Outline mode provides a drop cue for vertical reorder; compact mode
@@ -86,7 +110,10 @@ ownership or approval rules and requires no database migration.
 `timeline-cloud-read` and `timeline-api-read` tests cover packing at every scale,
 sparse milestone intervals, partial schedules, hierarchy, deep trees, viewport
 boundaries, pointer anchoring, burst wheel input, request ownership, exact
-rollback, pagination and both data adapters. Existing Timeline command, Undo,
+rollback, pagination and both data adapters. `milestone-agenda` covers Vietnam
+date boundaries, calendar weeks/months, scope, context and independent filters.
+`timeline-milestone-boundary` verifies adjacent phases and actual marker footprints
+at each zoom, including deterministic randomized clustering cases. Existing Timeline command, Undo,
 Calendar and selected-date suites remain relevant.
 
 Browser QA must use an isolated Local database. Check outline toggling, short-bar

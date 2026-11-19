@@ -519,8 +519,8 @@ describe('Timeline whole-Task footprint packing', () => {
         const pieces = row.tasks.map((plan) => [
           { left: plan.left, right: plan.left + plan.width },
           ...plan.clusters.map((cluster) => ({
-            left: pixel(cluster.day),
-            right: pixel(cluster.day) + cluster.width,
+            left: pixel(cluster.day) + cluster.offset,
+            right: pixel(cluster.day) + cluster.offset + cluster.width,
           })),
         ]);
         for (let i = 0; i < pieces.length; ++i)

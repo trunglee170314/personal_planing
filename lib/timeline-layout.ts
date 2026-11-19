@@ -169,7 +169,8 @@ function taskLayout(
     ? [{ left, right: left + width }]
     : [];
   for (const cluster of clusters) {
-    const markerLeft = (dayNumber(cluster.day)! - origin) * dayWidth;
+    const markerLeft =
+      (dayNumber(cluster.day)! - origin) * dayWidth + cluster.offset;
     intervals.push({ left: markerLeft, right: markerLeft + cluster.width });
   }
   return {

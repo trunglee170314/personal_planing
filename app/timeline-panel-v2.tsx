@@ -89,10 +89,9 @@ import { matchesPlanningSearch } from '@/lib/planning-context';
 import { timelineTodayScrollLeft } from '@/lib/planning-viewport';
 import { guardPlanningPointer } from '@/lib/pointer-actions';
 import { safeTaskLink } from '@/lib/task-links';
-import {
-  milestoneMarkerWidth,
-  type MilestoneCluster,
-} from '@/lib/workspace-view';
+import type { MilestoneCluster } from '@/lib/workspace-view';
+import { TimelineMilestonesDialog } from './timeline-milestones-dialog';
+import { milestoneAgenda } from '@/lib/milestone-agenda';
 
 type Kind = 'goal' | 'task' | 'milestone';
 type Plan = { start: string; end: string };
@@ -189,6 +188,7 @@ export function TimelinePanelV2() {
   const frozenRef = useRef<TimelineWorkspace | null>(null);
   const pinnedRowRef = useRef<string | null>(null);
   const pendingFocus = useRef<string | null>(null);
+  const pendingMilestoneJump = useRef<string | null>(null);
   const frameRef = useRef<number | null>(null);
   const viewportFrameRef = useRef<number | null>(null);
   const edgeFrameRef = useRef<number | null>(null);
@@ -547,6 +547,104 @@ export function TimelinePanelV2() {
       pendingFocus.current = null;
     }
   }, [selection, renderedRows, outlineOpen]);
+  useLayoutEffect(() => {
+    const id = pendingMilestoneJump.current;
+    if (!id) return;
+    const board = boardRef.current;
+    const row = rowByItem.get(`milestone:${id}`);
+    const milestone = workspace.milestones.find((item) => item.id === id);
+    if (
+      !milestone ||
+      (milestone.task_id && !index.tasksById.has(milestone.task_id)) ||
+      (!milestone.task_id &&
+        milestone.goal_id &&
+        !index.goalsById.has(milestone.goal_id))
+    ) {
+      pendingMilestoneJump.current = null;
+      setMessage('This milestone is no longer available.');
+      return;
+    }
+    const plan = milestone.task_id
+      ? layout.plansByTaskId.get(milestone.task_id)
+      : undefined;
+    if (!outlineOpen && plan && !plan.width) {
+      setOutlineOpen(true);
+      return;
+    }
+    if (!board || !row) return;
+    const group = row.clusters.find((item) =>
+      item.items.some((marker) => marker.id === id),
+    );
+    board.scrollLeft = timelineTodayScrollLeft(
+      daysBetween(originKey, group?.day ?? milestone.milestone_on) * dayWidth +
+        (group?.offset ?? 0),
+      board.clientWidth,
+      outlineOpen ? outlineWidth : 0,
+    );
+    board.scrollTop = Math.max(0, row.top - 24);
+    updateViewport();
+    const marker = [
+      ...board.querySelectorAll<HTMLElement>('[data-timeline-markers]'),
+    ].find((element) =>
+      element.dataset.timelineMarkers?.split(' ').includes(id),
+    );
+    if (marker) {
+      marker.focus({ preventScroll: true });
+      pendingMilestoneJump.current = null;
+    }
+  }, [
+    rowByItem,
+    renderedRows,
+    workspace.milestones,
+    originKey,
+    dayWidth,
+    outlineOpen,
+    outlineWidth,
+    viewport.left,
+    viewport.top,
+    layout.plansByTaskId,
+    index.tasksById,
+    index.goalsById,
+  ]);
+  function goToMilestone(id: string) {
+    const item = milestoneAgenda(workspace, {
+      period: 'all',
+      now: new Date(),
+      query: '',
+      importantOnly: false,
+    }).find((item) => item.milestone.id === id);
+    if (!item) {
+      pendingMilestoneJump.current = null;
+      setMessage('This milestone is no longer available.');
+      return;
+    }
+    const { milestone, task, goal } = item;
+    pendingFocus.current = null;
+    pendingMilestoneJump.current = milestone.id;
+    setQuery('');
+    if (!milestone.is_important) setImportantOnly(false);
+    setCollapsed((current) => {
+      const next = new Set(current);
+      next.delete(goal?.id ?? 'inbox');
+      return next;
+    });
+    if (task) {
+      const ancestors = new Set<string>();
+      let current: Task | undefined = task;
+      while (current && !ancestors.has(current.id)) {
+        ancestors.add(current.id);
+        current = current.parent_task_id
+          ? index.tasksById.get(current.parent_task_id)
+          : undefined;
+      }
+      setCollapsedTasks(
+        (current) => new Set([...current].filter((id) => !ancestors.has(id))),
+      );
+      setSelection({ kind: 'task', id: task.id });
+    } else setSelection({ kind: 'goal', id: goal?.id ?? 'inbox' });
+    if (milestone.milestone_on < originKey)
+      setRangeStart(new Date(`${milestone.milestone_on}T00:00:00`));
+  }
   function extendEarlier() {
     const count = Math.min(90, daysBetween('2000-01-01', originKey));
     if (count <= 0) return;
@@ -1295,9 +1393,11 @@ export function TimelinePanelV2() {
       .filter(
         (group) =>
           group.items.some((item) => item.id === dragRef.current?.id) ||
-          (daysBetween(originKey, group.day) * dayWidth + group.width >=
+          (daysBetween(originKey, group.day) * dayWidth +
+            group.offset +
+            group.width >=
             viewport.left - 240 &&
-            daysBetween(originKey, group.day) * dayWidth <=
+            daysBetween(originKey, group.day) * dayWidth + group.offset <=
               viewport.left + viewport.width + 240),
       )
       .map((group) => {
@@ -1308,11 +1408,15 @@ export function TimelinePanelV2() {
               key={`cluster:${group.items[0].id}`}
               type="button"
               data-bar
+              data-timeline-markers={group.items
+                .map((item) => item.id)
+                .join(' ')}
               aria-label={`Open ${group.items.length} milestones for ${label}${important ? ' (Important)' : ''}`}
               title={`${group.items.length} milestones · ${label}`}
               className={`absolute top-0.5 z-10 flex h-7 items-center justify-center gap-1 rounded-md border bg-card text-xs font-semibold shadow-sm hover:bg-muted ${important ? 'border-2 border-foreground/70' : ''}`}
               style={{
-                left: daysBetween(originKey, group.day) * dayWidth,
+                left:
+                  daysBetween(originKey, group.day) * dayWidth + group.offset,
                 width: group.width,
               }}
               onPointerDown={(event) => event.stopPropagation()}
@@ -1341,12 +1445,13 @@ export function TimelinePanelV2() {
             key={`marker:${item.id}`}
             type="button"
             data-bar
+            data-timeline-markers={item.id}
             aria-label={`Edit milestone ${item.title}${item.is_important ? ' (Important)' : ''}`}
             title={`${item.is_important ? '★ Important · ' : ''}${item.title}\n${item.milestone_on}\n${label}${notes[item.id] ? `\n${notes[item.id]}` : ''}`}
             className={`absolute top-0.5 z-10 flex h-7 touch-none items-center gap-1 overflow-hidden rounded-md ${item.is_important ? 'border-2 border-foreground/70 bg-card px-1 text-xs font-semibold shadow-sm' : 'justify-center hover:bg-muted'}`}
             style={{
-              left: daysBetween(originKey, day) * dayWidth,
-              width: milestoneMarkerWidth(item),
+              left: daysBetween(originKey, day) * dayWidth + group.offset,
+              width: group.width,
             }}
             onMouseEnter={() => milestoneNotes(item.id)}
             onFocus={() => milestoneNotes(item.id)}
@@ -1377,9 +1482,11 @@ export function TimelinePanelV2() {
               />
             ) : (
               <Flag
-                className="size-5 fill-current"
+                className="shrink-0 fill-current"
                 style={{
                   color: milestoneColorValue(item.color_key, inherited),
+                  width: Math.min(20, group.width),
+                  height: Math.min(20, group.width),
                 }}
                 aria-hidden="true"
               />
@@ -1412,6 +1519,11 @@ export function TimelinePanelV2() {
         <Button variant="outline" onClick={goToday} disabled={isFrozen}>
           Today
         </Button>
+        <TimelineMilestonesDialog
+          workspace={workspace}
+          disabled={isFrozen || loading}
+          onGoToDate={goToMilestone}
+        />
         <label className="flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border px-3 text-xs font-semibold">
           <input
             type="checkbox"

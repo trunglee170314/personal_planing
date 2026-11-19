@@ -105,12 +105,17 @@ describe('one-lane zoom-aware milestone clusters', () => {
     ).toEqual([['a'], ['b'], ['c'], ['d']]);
     expect(clusterMilestones(marks, 28)).toHaveLength(4); // exact gap, not an arbitrary date bucket
   });
-  it('clusters only pixel collisions in Month and separates again after zooming', () => {
+  it('keeps Month markers separate and clusters only actual collisions in Quarter', () => {
     const month = clusterMilestones(marks, 18);
     expect(
       month.map((cluster) => cluster.items.map((item) => item.id)),
+    ).toEqual([['a'], ['b'], ['c'], ['d']]);
+    expect(month[0].width).toBe(14);
+    const quarter = clusterMilestones(marks, 8);
+    expect(
+      quarter.map((cluster) => cluster.items.map((item) => item.id)),
     ).toEqual([['a', 'b', 'c'], ['d']]);
-    expect(month[0].width).toBe(48);
+    expect(quarter[0].width).toBe(48);
     expect(clusterMilestones(marks, 50)).toHaveLength(4);
     expect(marks.map((item) => item.id)).toEqual(['a', 'b', 'c', 'd']);
   });
@@ -125,7 +130,6 @@ describe('one-lane zoom-aware milestone clusters', () => {
     expect(clustered[0].items.map((item) => item.id)).toEqual([
       'a',
       'important',
-      'b',
     ]);
     expect(
       clustered[0].items.some(
