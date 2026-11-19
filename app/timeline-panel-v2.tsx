@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   Flag,
   PanelLeftClose,
+  GripVertical,
   PanelLeftOpen,
   Star,
 } from 'lucide-react';
@@ -42,6 +43,7 @@ import {
   type Task,
   type TimelineMilestone,
   type TimelineWorkspace,
+  type TimelineHierarchyPlan,
 } from '@/lib/data/repository';
 import {
   listHolidays,
@@ -90,6 +92,15 @@ import { timelineTodayScrollLeft } from '@/lib/planning-viewport';
 import { guardPlanningPointer } from '@/lib/pointer-actions';
 import { safeTaskLink } from '@/lib/task-links';
 import type { MilestoneCluster } from '@/lib/workspace-view';
+import {
+  timelineHierarchyDrop,
+  timelineHierarchyNoop,
+  timelineHierarchyPlacement,
+  timelineHierarchyTree,
+  sameTimelineHierarchy,
+  type TimelineHierarchyDrop,
+  type TimelineHierarchyTarget,
+} from '@/lib/timeline-hierarchy';
 import { TimelineMilestonesDialog } from './timeline-milestones-dialog';
 import { milestoneAgenda } from '@/lib/milestone-agenda';
 
@@ -106,6 +117,9 @@ type Drag = Plan & {
   mode: 'move' | 'resize-start' | 'resize-end';
   activated: boolean;
   axis?: 'horizontal' | 'vertical';
+  origin: 'chart' | 'outline';
+  hierarchyPlan?: Promise<TimelineHierarchyPlan | null>;
+  hierarchyError?: string;
   before: Goal | Task | TimelineMilestone;
 };
 type Creation = {
@@ -134,6 +148,7 @@ export function TimelinePanelV2() {
   const [workspace, setWorkspace] = useState<TimelineWorkspace>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
+  const hierarchyConflictMessage = useRef<string | null>(null);
   const [zoom, setZoom] = useState<TimelineZoom>(() => {
     const saved = readPreference('myplan-timeline-zoom');
     return TIMELINE_ZOOMS.includes(saved as TimelineZoom)
@@ -159,6 +174,14 @@ export function TimelinePanelV2() {
   const [moving, setMoving] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [dropId, setDropId] = useState<string | null>(null);
+  const [hierarchyHover, setHierarchyHover] = useState<
+    (TimelineHierarchyDrop & { rowKey: string }) | null
+  >(null);
+  const hierarchyCache = useRef<{
+    key: string;
+    workspace: TimelineWorkspace;
+    drop: TimelineHierarchyDrop;
+  } | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [cluster, setCluster] = useState<{
     items: TimelineMilestone[];
@@ -189,6 +212,10 @@ export function TimelinePanelV2() {
   const pinnedRowRef = useRef<string | null>(null);
   const pendingFocus = useRef<string | null>(null);
   const pendingMilestoneJump = useRef<string | null>(null);
+  const pendingHierarchyReveal = useRef<{
+    id: string;
+    before: TimelineWorkspace;
+  } | null>(null);
   const frameRef = useRef<number | null>(null);
   const viewportFrameRef = useRef<number | null>(null);
   const edgeFrameRef = useRef<number | null>(null);
@@ -247,7 +274,7 @@ export function TimelinePanelV2() {
         return earliest;
       });
       setWorkspace(next);
-      setMessage('');
+      setMessage(hierarchyConflictMessage.current ?? '');
     } catch (error) {
       if (current()) setMessage(getErrorMessage(error));
     } finally {
@@ -645,6 +672,32 @@ export function TimelinePanelV2() {
     if (milestone.milestone_on < originKey)
       setRangeStart(new Date(`${milestone.milestone_on}T00:00:00`));
   }
+  useLayoutEffect(() => {
+    const pending = pendingHierarchyReveal.current,
+      board = boardRef.current;
+    if (
+      !pending ||
+      !board ||
+      workspace === pending.before ||
+      moving ||
+      dragging
+    )
+      return;
+    const row = rowByItem.get(`task:${pending.id}`);
+    if (!row) {
+      pendingHierarchyReveal.current = null;
+      return;
+    }
+    const usable = board.clientHeight - HEADER_HEIGHT;
+    if (row.top < board.scrollTop) board.scrollTop = row.top;
+    else if (row.top + row.height > board.scrollTop + usable)
+      board.scrollTop = Math.max(0, row.top + row.height - usable);
+    updateViewport();
+    board
+      .querySelector<HTMLElement>(`[data-timeline-focus="task:${pending.id}"]`)
+      ?.focus({ preventScroll: true });
+    pendingHierarchyReveal.current = null;
+  }, [workspace, rowByItem, moving, dragging]);
   function extendEarlier() {
     const count = Math.min(90, daysBetween('2000-01-01', originKey));
     if (count <= 0) return;
@@ -853,12 +906,12 @@ export function TimelinePanelV2() {
       });
   }
   function beginGesture(row: TimelineLayoutRow) {
+    hierarchyConflictMessage.current = null;
     if (readingRef.current > 0) deferredLoad.current = true;
     guardRef.current.invalidate();
     frozenRef.current = workspace;
     pinnedRowRef.current = row.key;
     setDragging(true);
-    setMessage('');
   }
   function startDrag(
     event: React.PointerEvent<HTMLElement>,
@@ -867,6 +920,7 @@ export function TimelinePanelV2() {
     id: string,
     plan: Plan,
     mode: Drag['mode'],
+    origin: Drag['origin'] = 'chart',
   ) {
     if (busyRef.current || dragRef.current || creationRef.current) return;
     const before =
@@ -880,7 +934,7 @@ export function TimelinePanelV2() {
     event.currentTarget.setPointerCapture(event.pointerId);
     beginGesture(row);
     pointerRef.current = { x: event.clientX, y: event.clientY };
-    dragRef.current = {
+    const state: Drag = {
       ...plan,
       kind,
       id,
@@ -890,8 +944,34 @@ export function TimelinePanelV2() {
       scrollLeft: boardRef.current?.scrollLeft ?? 0,
       mode,
       activated: false,
+      origin,
       before,
     };
+    dragRef.current = state;
+    if (kind === 'task' && mode === 'move' && outlineOpen && repository) {
+      const expectedTree = timelineHierarchyTree(workspace);
+      state.hierarchyPlan = readSettledPlanning(() =>
+        repository.previewTimelineHierarchy(id),
+      )
+        .then((plan) => {
+          if (dragRef.current !== state) return null;
+          if (!sameTimelineHierarchy(expectedTree, plan.tree)) {
+            state.hierarchyError = 'The outline changed. Reload and try again.';
+            hierarchyConflictMessage.current = state.hierarchyError;
+            deferredLoad.current = true;
+            queuePreview();
+            return null;
+          }
+          return plan;
+        })
+        .catch((error) => {
+          if (dragRef.current === state) {
+            state.hierarchyError = getErrorMessage(error);
+            queuePreview();
+          }
+          return null;
+        });
+    }
   }
   function dragPlan(state: Drag): Preview {
     const dx =
@@ -918,9 +998,99 @@ export function TimelinePanelV2() {
         ?.closest<HTMLElement>('[data-timeline-drop]') ?? null
     );
   }
+  function overOutline() {
+    if (!outlineOpen) return false;
+    const outline = boardRef.current?.querySelector<HTMLElement>(
+      '[data-timeline-outline]',
+    );
+    const board = boardRef.current;
+    if (!outline || !board) return false;
+    const rect = outline.getBoundingClientRect(),
+      bounds = board.getBoundingClientRect();
+    return (
+      pointerRef.current.x >= rect.left &&
+      pointerRef.current.x < rect.right &&
+      pointerRef.current.y >= bounds.top &&
+      pointerRef.current.y < bounds.bottom
+    );
+  }
+  function hierarchyAtPointer(state: Drag) {
+    if (!overOutline() || state.kind !== 'task' || state.mode !== 'move')
+      return null;
+    const element = findDropTarget();
+    if (!element?.closest('[data-timeline-outline]')) return null;
+    const kind = element.dataset.timelineKind;
+    if (kind !== 'task' && kind !== 'goal') return null;
+    const id = element.dataset.timelineId;
+    if (!id) return null;
+    const rect = element.getBoundingClientRect();
+    const target: TimelineHierarchyTarget = {
+      kind,
+      id: kind === 'goal' && id === 'inbox' ? null : id,
+      placement:
+        kind === 'goal'
+          ? ('inside' as const)
+          : timelineHierarchyPlacement(
+              pointerRef.current.y - rect.top,
+              rect.height,
+            ),
+    };
+    const frozen = frozenRef.current ?? workspace;
+    const key = JSON.stringify([state.id, target, state.hierarchyError]);
+    let drop: TimelineHierarchyDrop;
+    if (
+      hierarchyCache.current?.key === key &&
+      hierarchyCache.current.workspace === frozen
+    )
+      drop = hierarchyCache.current.drop;
+    else {
+      drop = timelineHierarchyDrop(frozen, state.id, target);
+      if (state.hierarchyError)
+        drop = { ...drop, valid: false, reason: state.hierarchyError };
+      hierarchyCache.current = { key, workspace: frozen, drop };
+    }
+    return { ...drop, rowKey: element.dataset.timelineDrop! };
+  }
+  function hierarchyCue() {
+    if (!hierarchyHover) return null;
+    const row = layout.rows.find((row) => row.key === hierarchyHover.rowKey);
+    if (!row) return null;
+    let top = row.top,
+      height = row.height;
+    if (hierarchyHover.target.placement === 'after') {
+      const at = outlineRows.findIndex(
+        (row) =>
+          row.kind === 'task' && row.task.id === hierarchyHover.target.id,
+      );
+      const target = outlineRows[at];
+      if (target?.kind === 'task') {
+        for (let i = at + 1; i < outlineRows.length; i++) {
+          const following = outlineRows[i];
+          if (following.kind !== 'task' || following.depth <= target.depth)
+            break;
+          const childRow = rowByItem.get('task:' + following.task.id);
+          if (childRow) height = childRow.top + childRow.height - row.top;
+        }
+      }
+      top += height;
+    }
+    return {
+      top,
+      height: hierarchyHover.target.placement === 'inside' ? row.height : 0,
+    };
+  }
   function updatePreview() {
     const state = dragRef.current;
     if (!state?.activated) return;
+    const hierarchy = hierarchyAtPointer(state);
+    setHierarchyHover((old) =>
+      JSON.stringify(old) === JSON.stringify(hierarchy) ? old : hierarchy,
+    );
+    if (overOutline() || state.origin === 'outline') {
+      setPreview(null);
+      setDropId(null);
+      return;
+    }
     const next = dragPlan(state);
     setPreview((old) =>
       old?.id === next.id &&
@@ -951,7 +1121,11 @@ export function TimelinePanelV2() {
         state = dragRef.current;
       if (!board || (!state?.activated && !creationRef.current)) return;
       const rect = board.getBoundingClientRect(),
-        horizontal = !state || state.axis !== 'vertical';
+        horizontal =
+          !state ||
+          (state.origin !== 'outline' &&
+            !overOutline() &&
+            state.axis !== 'vertical');
       const dx = horizontal
         ? timelineEdgeSpeed(
             pointerRef.current.x,
@@ -985,12 +1159,14 @@ export function TimelinePanelV2() {
       if (Math.max(dx, dy) < 4) return;
       state.activated = true;
       state.axis =
-        outlineOpen &&
-        state.mode === 'move' &&
-        state.kind !== 'milestone' &&
-        dy > dx
+        state.origin === 'outline'
           ? 'vertical'
-          : 'horizontal';
+          : outlineOpen &&
+              state.mode === 'move' &&
+              state.kind !== 'milestone' &&
+              dy > dx
+            ? 'vertical'
+            : 'horizontal';
     }
     queuePreview();
     startEdgeScroll();
@@ -1011,6 +1187,8 @@ export function TimelinePanelV2() {
     setDragging(false);
     setPreview(null);
     setDropId(null);
+    setHierarchyHover(null);
+    hierarchyCache.current = null;
     if (!busyRef.current && deferredLoad.current) {
       deferredLoad.current = false;
       void loadRef.current();
@@ -1062,11 +1240,93 @@ export function TimelinePanelV2() {
     const state = dragRef.current;
     if (state) {
       const next = dragPlan(state);
-      if (state.activated) setPreview(next);
+      if (
+        state.activated &&
+        !(
+          state.kind === 'task' &&
+          state.mode === 'move' &&
+          (overOutline() || state.origin === 'outline')
+        )
+      )
+        setPreview(next);
+      else setPreview(null);
       if (!state.activated) {
         releaseGesture();
-        if (!(state.kind === 'goal' && state.id === 'inbox'))
+        if (
+          state.origin !== 'outline' &&
+          !(state.kind === 'goal' && state.id === 'inbox')
+        )
           openPlanningEditor({ kind: state.kind, id: state.id });
+        return;
+      }
+      if (
+        state.kind === 'task' &&
+        state.mode === 'move' &&
+        (overOutline() || state.origin === 'outline')
+      ) {
+        const candidate = hierarchyAtPointer(state);
+        if (!candidate?.valid || !repository) {
+          cancelGesture();
+          setMessage(
+            candidate?.reason ??
+              'Drop on an outline row to change task structure.',
+          );
+          return;
+        }
+        if (
+          timelineHierarchyNoop(
+            frozenRef.current ?? workspace,
+            state.id,
+            candidate,
+          )
+        ) {
+          cancelGesture();
+          setMessage('Task is already in this position.');
+          return;
+        }
+        await mutate(async () => {
+          const plan = await state.hierarchyPlan;
+          if (
+            !plan ||
+            state.hierarchyError ||
+            dragRef.current !== state ||
+            !mountedRef.current
+          )
+            throw new Error(
+              state.hierarchyError ??
+                'Could not verify the outline. Try again.',
+            );
+          try {
+            await repository.restructureTimeline({
+              task_id: state.id,
+              target_kind: candidate.target.kind,
+              target_id: candidate.target.id,
+              placement: candidate.target.placement,
+              expected_version: plan.version,
+            });
+          } catch (error) {
+            hierarchyConflictMessage.current = getErrorMessage(error);
+            deferredLoad.current = true;
+            throw error;
+          }
+          if (candidate.parentId)
+            setCollapsedTasks((old) => {
+              const next = new Set(old);
+              next.delete(candidate.parentId!);
+              return next;
+            });
+          setCollapsed((old) => {
+            const next = new Set(old);
+            next.delete(links.get(state.id) ?? 'inbox');
+            return next;
+          });
+          pendingHierarchyReveal.current = {
+            id: state.id,
+            before: frozenRef.current ?? workspace,
+          };
+          setSelection({ kind: 'task', id: state.id });
+          pendingFocus.current = 'task:' + state.id;
+        });
         return;
       }
       if (state.axis === 'vertical') {
@@ -1078,15 +1338,19 @@ export function TimelinePanelV2() {
         }
         const goalId = target.dataset.timelineGoal || null,
           oldGoal = links.get(state.id) ?? null;
-        if (
-          state.kind === 'task' &&
-          goalId !== oldGoal &&
-          !window.confirm(
-            `Move “${(state.before as Task).title}” to ${index.goalsById.get(goalId ?? '')?.title ?? 'Inbox'}? Its child tasks stay in the original Goal.`,
-          )
-        ) {
-          cancelGesture();
-          return;
+        if (state.kind === 'task') {
+          const targetTask = index.tasksById.get(targetId);
+          if (
+            !targetTask ||
+            goalId !== oldGoal ||
+            targetTask.parent_task_id !== (state.before as Task).parent_task_id
+          ) {
+            cancelGesture();
+            setMessage(
+              'Calendar reordering stays within the same parent and Goal. Use the outline to change structure.',
+            );
+            return;
+          }
         }
         await mutate(() =>
           repository.reorderTimeline({
@@ -1573,6 +1837,13 @@ export function TimelinePanelV2() {
             </Button>
           ))}
         </fieldset>
+        {hierarchyHover ? (
+          <output className="text-xs font-semibold" aria-live="polite">
+            {hierarchyHover.valid
+              ? hierarchyHover.label
+              : hierarchyHover.reason}
+          </output>
+        ) : null}
         {moving ? (
           <output className="text-xs text-muted-foreground">Saving…</output>
         ) : null}
@@ -1584,7 +1855,10 @@ export function TimelinePanelV2() {
         ) : null}
       </div>
       {message ? (
-        <output className="mt-3 block rounded-xl border bg-muted p-3 text-xs">
+        <output
+          className="mt-3 block rounded-xl border bg-muted p-3 text-xs"
+          style={{ visibility: dragging ? 'hidden' : 'visible' }}
+        >
           {message}
         </output>
       ) : null}
@@ -1599,6 +1873,13 @@ export function TimelinePanelV2() {
         <div
           ref={boardRef}
           className="mt-3 h-[max(480px,calc(100dvh-250px))] overflow-auto rounded-2xl border bg-card shadow-sm"
+          onPointerMove={pointerMove}
+          onPointerUp={(event) => void pointerUp(event)}
+          onPointerCancel={cancelGesture}
+          onLostPointerCapture={() => {
+            if (!busyRef.current && (dragRef.current || creationRef.current))
+              cancelGesture();
+          }}
           data-timeline-board
           style={
             {
@@ -1671,6 +1952,27 @@ export function TimelinePanelV2() {
                   className="relative"
                   style={{ height: layout.totalHeight }}
                 >
+                  {hierarchyHover && hierarchyCue()
+                    ? (() => {
+                        const cue = hierarchyCue()!;
+                        return (
+                          <div
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute inset-x-0 z-40 ${hierarchyHover.valid ? 'border-primary text-primary' : 'border-destructive text-destructive'} ${cue.height ? 'rounded-md border-2 bg-primary/5 shadow-sm' : 'border-t-2'}`}
+                            style={{
+                              top: cue.top,
+                              height: cue.height || undefined,
+                            }}
+                          >
+                            <span className="absolute right-1 top-0 max-w-[calc(100%-12px)] -translate-y-1/2 truncate rounded border bg-card px-2 py-0.5 text-[11px] font-semibold shadow-sm">
+                              {hierarchyHover.valid
+                                ? hierarchyHover.label
+                                : hierarchyHover.reason}
+                            </span>
+                          </div>
+                        );
+                      })()
+                    : null}
                   {renderedRows.map((row) =>
                     row.goal ? (
                       <div
@@ -1736,6 +2038,34 @@ export function TimelinePanelV2() {
                               paddingLeft: 16 + (plan.row.depth + 1) * 20,
                             }}
                           >
+                            <button
+                              type="button"
+                              data-bar
+                              aria-label={`Drag structure for ${task.title}`}
+                              title="Drag onto the outline to change parent or order"
+                              disabled={moving}
+                              className="relative mr-1 flex size-5 shrink-0 touch-none cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                              onPointerDown={(event) =>
+                                startDrag(
+                                  event,
+                                  row,
+                                  'task',
+                                  task.id,
+                                  {
+                                    start:
+                                      task.planned_start ?? dateKey(new Date()),
+                                    end:
+                                      deadlineKey(task) ??
+                                      task.planned_start ??
+                                      dateKey(new Date()),
+                                  },
+                                  'move',
+                                  'outline',
+                                )
+                              }
+                            >
+                              <GripVertical className="size-3.5" />
+                            </button>
                             <span
                               aria-hidden="true"
                               className="pointer-events-none absolute inset-y-0 left-4"
@@ -1871,16 +2201,6 @@ export function TimelinePanelV2() {
               ref={chartRef}
               className="relative shrink-0"
               style={{ width: chartWidth }}
-              onPointerMove={pointerMove}
-              onPointerUp={(event) => void pointerUp(event)}
-              onPointerCancel={cancelGesture}
-              onLostPointerCapture={() => {
-                if (
-                  !busyRef.current &&
-                  (dragRef.current || creationRef.current)
-                )
-                  cancelGesture();
-              }}
             >
               <div
                 className="sticky top-0 z-20 h-12 overflow-hidden border-b bg-card"

@@ -7,6 +7,65 @@ parents and children. Closing the outline packs scheduled Tasks within each Goal
 and hides Tasks without a complete, drawable date range. Reopening it restores
 the original outline order and hierarchy.
 
+## Parent/Subtask gestures
+
+With the outline open, every Task has a drag handle, including unscheduled Tasks.
+A date bar can also be dragged into the outline. The destination's top quarter
+means Before, middle half Inside, and bottom quarter After. Inside appends the
+last child; Before/After use the destination Task's parent. After's insertion cue
+is drawn after its complete visible branch. Dropping on the current Goal heading
+appends a top-level Task. Inbox accepts only Tasks with no stored Goal link;
+inactive-Goal links are not silently normalized into Inbox during a write.
+
+The outline shows an Inside/Before/After cue, or a rejection reason. The pointer's
+current surface and target are resolved again at release, including after edge
+scrolling. Handle-origin drags stay structural; a date bar entering the outline
+clears its date preview. An invalid outline drop cannot fall back to a date
+write. Calendar vertical reordering is restricted to the same parent and Goal;
+resize handles and milestones retain date-only behavior. Escape, blur and lost
+capture cancel unfinished gestures. Old preview promises cannot affect a newer
+or canceled gesture. Existing messages retain their layout height while dragging
+so feedback cannot shift a target beneath the pointer.
+
+Preview returns an opaque version plus the complete active Task tree. The client
+compares that tree with its frozen view, so an already stale outline cannot use a
+fresh version to overwrite another session's parent change. The atomic server
+command checks the full active Task snapshot under the existing account mutation
+lock, then validates same raw Goal, self/descendant cycles, active ancestors and
+targets. Only the moved root's parent and destination sibling order are written;
+all descendant links, Task dates/status/other metadata, Calendar entries and
+milestone ownership remain. Existing derived Goal-progress rules still apply.
+
+Parent and order produce one normal History/Undo receipt. Known view-level no-ops
+are skipped; backend no-ops reject before writing so older Undo history remains
+available. On success the destination parent/Goal opens, canonical data reloads,
+and the moved row is revealed and focused. Version rejection reloads the tree and
+keeps its explanation visible. Errors never apply a partial parent/order update.
+
+Online requires migration 0035 and schema reload before the frontend. Local uses
+`timeline-hierarchy.mjs` through dedicated preview/restructure endpoints. Both
+adapters expose `previewTimelineHierarchy` and `restructureTimeline`; legacy Goal
+reordering remains separate.
+
+Verification on 2026-11-19: 95 added hierarchy tests cover Local storage/HTTP,
+Cloud/Local repository and Undo contracts, drop geometry, full-tree comparisons,
+no-ops and malformed ancestry. The full suite passed 683 tests with one opt-in
+System Map benchmark skipped. An unchanged Today stress test timed out once
+under concurrent browser compilation; it passed alone and the full suite passed
+again without changing code or timeout settings. Typecheck and changed-file lint
+passed. The network-isolated PostgreSQL 16 harness verifies all placements,
+subtree/metadata/attachment preservation, version conflicts, exact Undo,
+atomicity, approval and ownership.
+
+Disposable browser QA exercised handle/bar Inside, a closed destination opening,
+Before/After an expanded branch, Goal-root placement with a grandchild, an
+unscheduled Task, Ctrl+Z, cycle/cross-Goal rejection and persistence after reload.
+A simulated second session's parent edit was preserved and the stale view was
+rejected. Direct disposable database comparisons confirmed unchanged Task
+metadata and attachments. A calendar date-only drag plus Undo retained the
+parent and restored exact dates. These checks do not imply authenticated
+production planning-record mutations; no QA fixtures belong in the live project.
+
 ## Compact rows
 
 `lib/timeline-layout.ts` indexes relationships and milestones once per data/filter

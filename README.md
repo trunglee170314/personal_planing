@@ -2,6 +2,12 @@
 
 The Plan is a private personal-planning workspace built with React/Vinext. It connects goals, tasks, due dates, a timeline, weekly reviews, and an independent Pomodoro timer.
 
+## Timeline Parent/Subtask drag and drop
+
+Open the Timeline outline and drag a Task handle, or drag its date bar into the outline. Drop in the middle of a Task for **Inside**, at its upper/lower edge for **Before/After**, or on the current Goal heading to make it a top-level Task. After places the Task after the destination's complete branch. Descendants and milestones stay attached; dates and Task status are unchanged. Cross-Goal moves remain a separate action. A closed destination parent opens after a successful drop. Unscheduled Tasks have the same outline handle.
+
+The server saves parent and order atomically, rejects cycles and stale versions, and records one standard Undo action (Ctrl+Z). Calendar-surface dragging remains date movement or same-parent reordering. Apply `supabase/migrations/0035_timeline_hierarchy.sql` after 0034 before deploying this release online. Local picks up the command on server restart. See [Timeline contracts](docs/timeline-layout.md) and run `bash scripts/test-timeline-hierarchy.sh` for isolated PostgreSQL verification; never apply test fixtures to production.
+
 ## Calendar and Today move consistency
 
 Dragging or resizing a repeating item supports This occurrence, This and future occurrences, and Entire series. Every scope reloads the canonical Calendar workspace after saving, including materialized instances, original keys, overrides and repeat-until dates. Time changes preserve the server's current Done/Not needed outcomes. Shared editors retain pin settings, and long-running schedules remain reachable from Today and the Checklist/Reminder lists.

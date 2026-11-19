@@ -137,6 +137,23 @@ export type TimelineReorderInput = {
   goal_id?: string | null;
   before_id?: string | null;
 };
+export type TimelineHierarchyTree = Array<{
+  id: string;
+  parent_task_id: string | null;
+  goal_id: string | null;
+  sort_order: number | null;
+}>;
+export type TimelineHierarchyPlan = {
+  version: string;
+  tree: TimelineHierarchyTree;
+};
+export type TimelineHierarchyMove = {
+  task_id: string;
+  target_kind: 'task' | 'goal';
+  target_id: string | null;
+  placement: 'inside' | 'before' | 'after';
+  expected_version: string;
+};
 export type WeeklyReview = {
   id: string;
   week_start: string;
@@ -315,6 +332,8 @@ export interface PlanningRepository {
   ): Promise<void>;
   moveTimelineTask(id: string, input: TimelineTaskMove): Promise<void>;
   reorderTimeline(input: TimelineReorderInput): Promise<void>;
+  previewTimelineHierarchy(taskId: string): Promise<TimelineHierarchyPlan>;
+  restructureTimeline(input: TimelineHierarchyMove): Promise<void>;
   createTimelineMilestone(
     input: Omit<TimelineMilestone, 'id'>,
   ): Promise<string>;
@@ -1627,6 +1646,21 @@ class SupabasePlanningRepository implements PlanningRepository {
     });
     assertNoError(result.error);
   }
+  async previewTimelineHierarchy(taskId: string) {
+    const result = await this.supabase.rpc(
+      'myplan_preview_timeline_hierarchy',
+      { target_task: taskId },
+    );
+    assertNoError(result.error);
+    return result.data as TimelineHierarchyPlan;
+  }
+  async restructureTimeline(input: TimelineHierarchyMove) {
+    const result = await this.supabase.rpc(
+      'myplan_restructure_timeline',
+      input,
+    );
+    assertNoError(result.error);
+  }
   async getTimelineWorkspace(
     options: { includeChecklistCounts?: boolean } = {},
   ) {
@@ -2167,6 +2201,17 @@ class LocalPlanningRepository implements PlanningRepository {
       body: JSON.stringify(input),
     });
   }
+  previewTimelineHierarchy(taskId: string) {
+    return localRequest<TimelineHierarchyPlan>(
+      `/api/timeline/hierarchy/${encodeURIComponent(taskId)}`,
+    );
+  }
+  restructureTimeline(input: TimelineHierarchyMove) {
+    return localRequest<void>('/api/timeline/hierarchy', {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  }
   getTimelineWorkspace(options: { includeChecklistCounts?: boolean } = {}) {
     return localRequest<TimelineWorkspace>(
       `/api/timeline${options.includeChecklistCounts === false ? '?checklistCounts=0' : ''}`,
@@ -2247,6 +2292,7 @@ function withUndo(repository: PlanningRepository): PlanningRepository {
     'moveTimelineGroup',
     'moveTimelineTask',
     'reorderTimeline',
+    'restructureTimeline',
   ]);
   const methods = new Map<PropertyKey, unknown>();
   return new Proxy(repository, {

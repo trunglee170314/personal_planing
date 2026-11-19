@@ -15,6 +15,10 @@ import { isRepeatStart } from '../lib/repeat-series.mjs';
 import { installLocalUndo } from './undo.mjs';
 import { LocalSystemMaps } from './system-maps.mjs';
 import {
+  previewTimelineHierarchy,
+  restructureTimeline,
+} from './timeline-hierarchy.mjs';
+import {
   timelineGroupPlan,
   moveTimelineGroup,
   moveTimelineTask,
@@ -198,6 +202,12 @@ function expandSessionOccurrences(session, states = []) {
 }
 
 export class LocalDatabase {
+  previewTimelineHierarchy(taskId) {
+    return previewTimelineHierarchy(this, taskId);
+  }
+  restructureTimeline(input) {
+    return restructureTimeline(this, input);
+  }
   previewTimelineGroup(goalId) {
     return timelineGroupPlan(this, goalId);
   }

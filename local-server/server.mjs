@@ -424,6 +424,27 @@ async function handleRequest(request, response) {
       );
       return send(response, 200, { data: null }, origin);
     }
+    const hierarchyPreview = url.pathname.match(
+      /^\/api\/timeline\/hierarchy\/([^/]+)$/,
+    );
+    if (hierarchyPreview && request.method === 'GET')
+      return send(
+        response,
+        200,
+        {
+          data: database.previewTimelineHierarchy(
+            decodeURIComponent(hierarchyPreview[1]),
+          ),
+        },
+        origin,
+      );
+    if (
+      url.pathname === '/api/timeline/hierarchy' &&
+      request.method === 'PUT'
+    ) {
+      database.restructureTimeline(await readJson(request));
+      return send(response, 200, { data: null }, origin);
+    }
     if (url.pathname === '/api/timeline/reorder' && request.method === 'PUT') {
       database.reorderTimeline(await readJson(request));
       return send(response, 200, { data: null }, origin);
