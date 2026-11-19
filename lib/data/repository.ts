@@ -292,12 +292,7 @@ export interface PlanningRepository {
     changes: Array<
       Pick<
         CalendarOccurrenceState,
-        | 'occurrence_start'
-        | 'override_starts_at'
-        | 'override_ends_at'
-        | 'title_override'
-        | 'completed_at'
-        | 'not_needed_at'
+        'occurrence_start' | 'override_starts_at' | 'override_ends_at'
       >
     >,
   ): Promise<void>;
@@ -1465,12 +1460,7 @@ class SupabasePlanningRepository implements PlanningRepository {
     changes: Array<
       Pick<
         CalendarOccurrenceState,
-        | 'occurrence_start'
-        | 'override_starts_at'
-        | 'override_ends_at'
-        | 'title_override'
-        | 'completed_at'
-        | 'not_needed_at'
+        'occurrence_start' | 'override_starts_at' | 'override_ends_at'
       >
     >,
   ) {
@@ -2122,12 +2112,7 @@ class LocalPlanningRepository implements PlanningRepository {
     changes: Array<
       Pick<
         CalendarOccurrenceState,
-        | 'occurrence_start'
-        | 'override_starts_at'
-        | 'override_ends_at'
-        | 'title_override'
-        | 'completed_at'
-        | 'not_needed_at'
+        'occurrence_start' | 'override_starts_at' | 'override_ends_at'
       >
     >,
   ) {

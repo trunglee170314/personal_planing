@@ -55,6 +55,22 @@ function validateDateYear(value, name) {
   if (!Number.isFinite(year) || year < 2000 || year > 2200)
     throw new Error(`${name} must use a year between 2000 and 2200.`);
 }
+function occurrenceDate(value) {
+  if (typeof value !== 'string') return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  // JavaScript normalizes February 30; PostgreSQL rejects that input.
+  const day = value.match(/^(\d{4}-\d{2}-\d{2})(?:T| |$)/)?.[1];
+  if (day) {
+    const calendarDate = new Date(`${day}T00:00:00Z`);
+    if (
+      !Number.isFinite(calendarDate.getTime()) ||
+      calendarDate.toISOString().slice(0, 10) !== day
+    )
+      return null;
+  }
+  return date;
+}
 function validateHttpUrl(value) {
   if (!value) return null;
   let url;
@@ -1541,11 +1557,13 @@ export class LocalDatabase {
       .prepare('SELECT * FROM calendar_sessions WHERE id=?')
       .get(calendarEntryId);
     if (!session) throw new Error('Calendar session not found.');
-    const occurrenceStart = new Date(input.occurrence_start);
-    if (Number.isNaN(occurrenceStart.getTime()))
+    const occurrenceStart = occurrenceDate(input.occurrence_start);
+    if (
+      !occurrenceStart ||
+      occurrenceStart < new Date('2000-01-01T00:00:00Z') ||
+      occurrenceStart >= new Date('2201-01-01T00:00:00Z')
+    )
       throw new Error('Occurrence time is invalid.');
-    if (input.completed_at && input.not_needed_at)
-      throw new Error('An occurrence cannot be done and not needed at once.');
     if (input.title_override !== undefined && input.title_override !== null)
       requireText(input.title_override, 'Title', 240);
     if (
@@ -1570,6 +1588,47 @@ export class LocalDatabase {
         'SELECT * FROM calendar_occurrence_states WHERE calendar_entry_id=? AND occurrence_start=?',
       )
       .get(calendarEntryId, occurrenceStart.toISOString());
+    // Validate the merged record before writing. A partial update must retain
+    // its other endpoint/outcome, just as the Cloud RPC patches its row first.
+    const patched = Object.fromEntries(
+      [
+        'completed_at',
+        'not_needed_at',
+        'override_starts_at',
+        'override_ends_at',
+      ].map((field) => [
+        field,
+        field in input
+          ? nullableText(input[field])
+          : currentState
+            ? (currentState[field] ?? null)
+            : field === 'completed_at' || field === 'not_needed_at'
+              ? (session[field] ?? null)
+              : null,
+      ]),
+    );
+    if (patched.completed_at && patched.not_needed_at)
+      throw new Error('An occurrence cannot be done and not needed at once.');
+    for (const field of ['completed_at', 'not_needed_at'])
+      if (patched[field] !== null && !occurrenceDate(patched[field]))
+        throw new Error('Occurrence outcome time is invalid.');
+    if (
+      (patched.override_starts_at === null) !==
+      (patched.override_ends_at === null)
+    )
+      throw new Error('Occurrence overrides need both a start and an end.');
+    if (patched.override_starts_at !== null) {
+      const overrideStart = occurrenceDate(patched.override_starts_at);
+      const overrideEnd = occurrenceDate(patched.override_ends_at);
+      if (
+        !overrideStart ||
+        !overrideEnd ||
+        overrideEnd <= overrideStart ||
+        overrideStart < new Date('2000-01-01T00:00:00Z') ||
+        overrideEnd >= new Date('2201-01-01T00:00:00Z')
+      )
+        throw new Error('Invalid occurrence time range (2000–2200).');
+    }
     this.db
       .prepare(
         `INSERT INTO calendar_occurrence_states
@@ -1585,18 +1644,10 @@ export class LocalDatabase {
       .run(
         calendarEntryId,
         occurrenceStart.toISOString(),
-        'completed_at' in input
-          ? nullableText(input.completed_at)
-          : (currentState?.completed_at ?? null),
-        'not_needed_at' in input
-          ? nullableText(input.not_needed_at)
-          : (currentState?.not_needed_at ?? null),
-        'override_starts_at' in input
-          ? nullableText(input.override_starts_at)
-          : (currentState?.override_starts_at ?? null),
-        'override_ends_at' in input
-          ? nullableText(input.override_ends_at)
-          : (currentState?.override_ends_at ?? null),
+        patched.completed_at,
+        patched.not_needed_at,
+        patched.override_starts_at,
+        patched.override_ends_at,
         now(),
       );
     this.db
@@ -1618,8 +1669,13 @@ export class LocalDatabase {
       throw new Error('Invalid occurrence moves.');
     this.beginTransaction();
     try {
-      for (const change of changes)
-        this.updateCalendarOccurrenceNow(calendarEntryId, change);
+      for (const change of changes) {
+        // Moving time must not replay outcomes from an older UI snapshot.
+        const schedule = { ...change };
+        delete schedule.completed_at;
+        delete schedule.not_needed_at;
+        this.updateCalendarOccurrenceNow(calendarEntryId, schedule);
+      }
       this.commitTransaction();
     } catch (error) {
       this.rollbackTransaction();

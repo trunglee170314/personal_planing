@@ -1,5 +1,22 @@
 import type { CalendarOccurrenceState } from './data/repository';
 
+type OccurrenceOutcome = Pick<
+  CalendarOccurrenceState,
+  'completed_at' | 'not_needed_at'
+>;
+
+/** An existing state owns explicit NULLs; an absent state inherits the item. */
+export function occurrenceOutcome(
+  state: OccurrenceOutcome | undefined,
+  item: OccurrenceOutcome,
+): OccurrenceOutcome {
+  const source = state ?? item;
+  return {
+    completed_at: source.completed_at,
+    not_needed_at: source.not_needed_at,
+  };
+}
+
 export const sameOccurrenceTime = (
   a: string | undefined,
   b: string | undefined,

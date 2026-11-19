@@ -7,6 +7,13 @@ import { normalizeDateSchedule } from '@/lib/selected-dates.mjs';
 import { TaskLink } from '@/components/task-link';
 import { readSettledPlanning } from '@/lib/undo-manager';
 import {
+  CalendarMoveReadError,
+  hasFiniteCalendarSeries,
+  embeddedCalendarAnchor,
+  moveCalendarSeriesAndRead,
+  moveCalendarOccurrencesAndRead,
+} from '@/lib/calendar-moves';
+import {
   OccurrenceEditor,
   type EditableOccurrence,
 } from '@/components/occurrence-editor';
@@ -14,7 +21,11 @@ import {
 import { RelationSelect } from '@/components/relation-select';
 import { ItemAnnotations } from '@/components/item-annotations';
 
-import { patchOccurrence, sameOccurrenceTime } from '@/lib/occurrence-state';
+import {
+  occurrenceOutcome,
+  patchOccurrence,
+  sameOccurrenceTime,
+} from '@/lib/occurrence-state';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -66,6 +77,10 @@ import {
   MYPLAN_DATA_CHANGED,
 } from '@/lib/data/data-events';
 import { CalendarGridV2 } from './calendar-grid-v2';
+import {
+  createPlanningReadGuard,
+  planningReadDisposition,
+} from '@/lib/planning-read-guard';
 
 type View = 'day' | 'week' | 'month';
 type Draft = {
@@ -119,7 +134,13 @@ function draftFromRange(start: Date, end: Date): Draft {
   };
 }
 
-export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
+export function PlannerCalendar({
+  embedded = false,
+  todayKey,
+}: {
+  embedded?: boolean;
+  todayKey?: string;
+}) {
   const [query, setQuery] = useState('');
   const repository = getPlanningRepository();
   const [workspace, setWorkspace] = useState<CalendarWorkspace>({
@@ -133,6 +154,13 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
   const [anchor, setAnchor] = useState(
     () => new Date(`${toLocalInput(new Date()).slice(0, 10)}T12:00:00`),
   );
+  const previousToday = useRef(toLocalInput(new Date()).slice(0, 10));
+  useEffect(() => {
+    if (!embedded || !todayKey || previousToday.current === todayKey) return;
+    const previous = previousToday.current;
+    previousToday.current = todayKey;
+    setAnchor((current) => embeddedCalendarAnchor(current, previous, todayKey));
+  }, [embedded, todayKey]);
   const viewStorageKey = embedded
     ? 'myplan-today-calendar-view'
     : 'myplan-main-calendar-view';
@@ -167,6 +195,7 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
   const deferredSyncRef = useRef(false);
   const silentLoadRef = useRef<(() => Promise<void>) | null>(null);
   const mutationEpochRef = useRef(0);
+  const readGuard = useRef(createPlanningReadGuard());
 
   function nextMutationVersion(key: string) {
     mutationEpochRef.current += 1;
@@ -199,23 +228,28 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
     async (options?: { silent?: boolean }) => {
       if (!repository) return;
       if (!options?.silent) setLoading(true);
+      const accepts = readGuard.current.begin();
       const startedAtEpoch = mutationEpochRef.current;
       try {
         const next = await readSettledPlanning(() =>
           repository.getCalendarWorkspace(),
         );
-        if (
-          startedAtEpoch !== mutationEpochRef.current ||
-          mutationQueuesRef.current.size > 0
-        ) {
-          deferredSyncRef.current = true;
+        if (!accepts()) return;
+        const disposition = planningReadDisposition(
+          startedAtEpoch,
+          mutationEpochRef.current,
+          mutationQueuesRef.current.size,
+        );
+        if (disposition !== 'apply') {
+          if (disposition === 'defer') deferredSyncRef.current = true;
+          else void silentLoadRef.current?.();
           return;
         }
         setWorkspace(next);
       } catch (error) {
-        setMessage(getErrorMessage(error));
+        if (accepts()) setMessage(getErrorMessage(error));
       } finally {
-        if (!options?.silent) setLoading(false);
+        if (accepts()) setLoading(false);
       }
     },
     [repository],
@@ -224,6 +258,8 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
     silentLoadRef.current = () => load({ silent: true });
   }, [load]);
   useEffect(() => {
+    readGuard.current.mount();
+    const guard = readGuard.current;
     const handle = window.setTimeout(() => void load(), 0);
     const sync = (event: Event) => {
       if (dataChangeSource(event) === syncSourceRef.current) return;
@@ -235,6 +271,7 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
     };
     window.addEventListener(MYPLAN_DATA_CHANGED, sync);
     return () => {
+      guard.dispose();
       window.clearTimeout(handle);
       window.removeEventListener(MYPLAN_DATA_CHANGED, sync);
     };
@@ -642,10 +679,7 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
             current.occurrence_states,
             item.id,
             item.occurrence_start!,
-            {
-              completed_at: previous?.completed_at ?? null,
-              not_needed_at: previous?.not_needed_at ?? null,
-            },
+            occurrenceOutcome(previous, item),
           ),
         }));
       setMessage(getErrorMessage(error));
@@ -672,7 +706,7 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
     }
     if (
       !item.occurrence_start ||
-      (base.item_type === 'checklist' && !base.recurrence_until)
+      (base.item_type === 'checklist' && !hasFiniteCalendarSeries(base))
     ) {
       setMessage(
         'Set a repeat-until date before moving this repeating checklist.',
@@ -686,171 +720,70 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
     });
   }
   async function confirmRecurringMove(scope: CalendarMoveScope) {
-    if (!repository || !pendingMove) return;
+    if (!repository || !pendingMove || saving) return;
     const { item, start, end } = pendingMove;
     const base = workspace.sessions.find((session) => session.id === item.id);
     if (!base) return;
-    if (scope === 'future' && !base.recurrence_until) {
+    if (scope === 'future' && !hasFiniteCalendarSeries(base)) {
       setMessage('Set a repeat-until date before moving future occurrences.');
       return;
     }
     setSaving(true);
     setMessage('');
-    const deltaStart = start.getTime() - new Date(item.starts_at).getTime();
-    const deltaEnd = end.getTime() - new Date(item.ends_at).getTime();
-    const occurrences =
-      scope === 'series'
-        ? []
-        : scope === 'occurrence'
-          ? [item]
-          : recurringSeriesFrom(base, item, workspace.occurrence_states);
-    const movedStates = occurrences.map((occurrence) => ({
-      calendar_entry_id: base.id,
-      occurrence_start: occurrence.occurrence_start,
-      override_starts_at: new Date(
-        new Date(occurrence.starts_at).getTime() + deltaStart,
-      ).toISOString(),
-      override_ends_at: new Date(
-        new Date(occurrence.ends_at).getTime() + deltaEnd,
-      ).toISOString(),
-      completed_at: occurrence.completed_at,
-      not_needed_at: occurrence.not_needed_at,
-    }));
-    const movedKeys = new Set(
-      movedStates.map(
-        (state) =>
-          `${state.calendar_entry_id}:${new Date(state.occurrence_start).toISOString()}`,
-      ),
-    );
-    const previousStates = workspace.occurrence_states.filter((state) =>
-      movedKeys.has(
-        `${state.calendar_entry_id}:${new Date(state.occurrence_start).toISOString()}`,
-      ),
-    );
-    const moveVersions = new Map<string, number>();
-    if (scope === 'series') {
-      for (const field of ['starts_at', 'ends_at']) {
-        const key = `session:${base.id}:${field}`;
-        moveVersions.set(key, nextMutationVersion(key));
-      }
-    } else {
-      for (const state of movedStates)
-        for (const field of ['override_starts_at', 'override_ends_at']) {
-          const key = `occurrence:${base.id}:${state.occurrence_start}:${field}`;
-          moveVersions.set(key, nextMutationVersion(key));
-        }
-    }
-    setWorkspace((current) =>
-      scope === 'series'
-        ? {
-            ...current,
-            sessions: current.sessions.map((session) =>
-              session.id === base.id && session.recurrence !== 'dates'
-                ? {
-                    ...session,
-                    starts_at: new Date(
-                      new Date(session.starts_at).getTime() + deltaStart,
-                    ).toISOString(),
-                    ends_at: new Date(
-                      new Date(session.ends_at).getTime() + deltaEnd,
-                    ).toISOString(),
-                  }
-                : session,
-            ),
-          }
-        : {
-            ...current,
-            occurrence_states: movedStates.reduce(
-              (states, moved) =>
-                patchOccurrence(
-                  states,
-                  moved.calendar_entry_id,
-                  moved.occurrence_start,
-                  {
-                    override_starts_at: moved.override_starts_at,
-                    override_ends_at: moved.override_ends_at,
-                  },
-                ),
-              current.occurrence_states,
-            ),
-          },
-    );
     setPendingMove(null);
+    nextMutationVersion('session:' + base.id + ':schedule');
+    const startedAtEpoch = mutationEpochRef.current;
+    const accepts = readGuard.current.begin();
     try {
+      const runMutation = (action: () => Promise<void>) =>
+        enqueueMutation('session:' + base.id, action);
+      let next: CalendarWorkspace;
       if (scope === 'series') {
-        await enqueueMutation(`session:${base.id}`, () =>
-          repository.moveCalendarSeries(
-            base.id,
-            item.starts_at,
-            item.ends_at,
-            start.toISOString(),
-            end.toISOString(),
-          ),
+        next = await moveCalendarSeriesAndRead(
+          repository,
+          {
+            id: base.id,
+            originalStart: item.starts_at,
+            originalEnd: item.ends_at,
+            nextStart: start.toISOString(),
+            nextEnd: end.toISOString(),
+          },
+          runMutation,
         );
-        if (base.recurrence === 'dates') await load({ silent: true });
       } else {
-        await enqueueMutation(`session:${base.id}`, () =>
-          repository.moveCalendarOccurrences(
-            base.id,
-            movedStates.map((state) => ({
-              occurrence_start: state.occurrence_start,
-              override_starts_at: state.override_starts_at,
-              override_ends_at: state.override_ends_at,
-              completed_at: state.completed_at,
-              not_needed_at: state.not_needed_at,
-            })),
-          ),
+        const deltaStart = start.getTime() - Date.parse(item.starts_at);
+        const deltaEnd = end.getTime() - Date.parse(item.ends_at);
+        const occurrences =
+          scope === 'occurrence'
+            ? [item]
+            : recurringSeriesFrom(base, item, workspace.occurrence_states);
+        next = await moveCalendarOccurrencesAndRead(
+          repository,
+          base.id,
+          occurrences.map((occurrence) => ({
+            occurrence_start: occurrence.occurrence_start,
+            override_starts_at: new Date(
+              Date.parse(occurrence.starts_at) + deltaStart,
+            ).toISOString(),
+            override_ends_at: new Date(
+              Date.parse(occurrence.ends_at) + deltaEnd,
+            ).toISOString(),
+          })),
+          runMutation,
         );
       }
       announceDataChanged();
+      if (!accepts()) return;
+      if (
+        startedAtEpoch === mutationEpochRef.current &&
+        mutationQueuesRef.current.size === 0
+      )
+        setWorkspace(next);
+      else if (mutationQueuesRef.current.size === 0)
+        await load({ silent: true });
+      else deferredSyncRef.current = true;
     } catch (error) {
-      setWorkspace((current) =>
-        scope === 'series'
-          ? {
-              ...current,
-              sessions: current.sessions.map((session) => {
-                if (session.id !== base.id) return session;
-                const rollback = { ...session };
-                for (const field of ['starts_at', 'ends_at'] as const) {
-                  const key = `session:${base.id}:${field}`;
-                  if (
-                    mutationVersionsRef.current.get(key) ===
-                    moveVersions.get(key)
-                  )
-                    rollback[field] = base[field];
-                }
-                return rollback;
-              }),
-            }
-          : {
-              ...current,
-              occurrence_states: current.occurrence_states.map((state) => {
-                const stateKey = `${state.calendar_entry_id}:${new Date(state.occurrence_start).toISOString()}`;
-                if (!movedKeys.has(stateKey)) return state;
-                const previous = previousStates.find(
-                  (item) =>
-                    item.calendar_entry_id === state.calendar_entry_id &&
-                    sameOccurrenceTime(
-                      item.occurrence_start,
-                      state.occurrence_start,
-                    ),
-                );
-                const rollback = { ...state };
-                for (const field of [
-                  'override_starts_at',
-                  'override_ends_at',
-                ] as const) {
-                  const key = `occurrence:${base.id}:${state.occurrence_start}:${field}`;
-                  if (
-                    mutationVersionsRef.current.get(key) ===
-                    moveVersions.get(key)
-                  )
-                    rollback[field] = previous?.[field] ?? null;
-                }
-                return rollback;
-              }),
-            },
-      );
+      if (error instanceof CalendarMoveReadError) announceDataChanged();
       setMessage(getErrorMessage(error));
     } finally {
       setSaving(false);
@@ -1604,9 +1537,11 @@ export function PlannerCalendar({ embedded = false }: { embedded?: boolean }) {
               onClick={() => void confirmRecurringMove('future')}
               disabled={
                 saving ||
-                !workspace.sessions.find(
-                  (item) => item.id === pendingMove?.item.id,
-                )?.recurrence_until
+                !hasFiniteCalendarSeries(
+                  workspace.sessions.find(
+                    (item) => item.id === pendingMove?.item.id,
+                  ) ?? { recurrence_until: null },
+                )
               }
             >
               This and future occurrences

@@ -7,6 +7,17 @@ import { normalizeDateSchedule } from '@/lib/selected-dates.mjs';
 import { TaskLink } from '@/components/task-link';
 import { readSettledPlanning } from '@/lib/undo-manager';
 import {
+  createPlanningReadGuard,
+  planningReadDisposition,
+} from '@/lib/planning-read-guard';
+import {
+  calendarItemDraft as sessionDraft,
+  calendarItemInput,
+  calendarItemOccurrence,
+  calendarItemOccurrences,
+  type CalendarItemDraft as Draft,
+} from '@/lib/calendar-items';
+import {
   OccurrenceEditor,
   type EditableOccurrence,
 } from '@/components/occurrence-editor';
@@ -18,9 +29,13 @@ import {
   WorkspaceListTools,
 } from '@/components/workspace-list-tools';
 
-import { patchOccurrence, sameOccurrenceTime } from '@/lib/occurrence-state';
+import {
+  occurrenceOutcome,
+  patchOccurrence,
+  sameOccurrenceTime,
+} from '@/lib/occurrence-state';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   CheckCircle2,
@@ -40,8 +55,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  addDays,
-  expandRecurringSessions,
   toLocalInput,
   vietnamDateKey,
   vietnamInputToIso,
@@ -52,7 +65,6 @@ import {
   getPlanningRepository,
   type CalendarItemType,
   type CalendarSession,
-  type CalendarSessionInput,
   type CalendarWorkspace,
 } from '@/lib/data/repository';
 import {
@@ -66,42 +78,7 @@ type Occurrence = CalendarSession & {
   occurrence_id: string;
   occurrence_start: string;
 };
-type Draft = {
-  id?: string;
-  original?: CalendarSession;
-  edit_scope?: 'future';
-  edit_from?: string;
-  title: string;
-  task_id: string;
-  starts_at: string;
-  ends_at: string;
-  recurrence: RecurrenceRule;
-  recurrence_until: string;
-  recurrence_interval: number;
-  recurrence_dates: string[];
-  notification_offsets: number[];
-  completed_at: string | null;
-  not_needed_at: string | null;
-};
-
 const offsets = [0, 5, 15, 60, 1440];
-function sessionDraft(base: CalendarSession): Draft {
-  return {
-    id: base.id,
-    original: base,
-    title: base.title,
-    task_id: base.task_id ?? '',
-    starts_at: toLocalInput(base.starts_at),
-    ends_at: toLocalInput(base.ends_at),
-    recurrence: base.recurrence,
-    recurrence_until: base.recurrence_until ?? '',
-    recurrence_interval: base.recurrence_interval || 1,
-    recurrence_dates: base.recurrence_dates ?? [],
-    notification_offsets: base.notification_offsets ?? [15],
-    completed_at: base.completed_at,
-    not_needed_at: base.not_needed_at,
-  };
-}
 const offsetLabel = (value: number) =>
   value === 0
     ? 'At time'
@@ -128,6 +105,7 @@ function freshDraft(): Draft {
     notification_offsets: [15],
     completed_at: null,
     not_needed_at: null,
+    is_pinned: false,
   };
 }
 
@@ -168,15 +146,20 @@ export function CalendarItemsManager({
   const sourceRef = useRef(sourceId);
   const mutationVersionsRef = useRef(new Map<string, number>());
   const mutationQueuesRef = useRef(new Map<string, Promise<void>>());
-  const loadRequestRef = useRef(0);
+  const readGuard = useRef(createPlanningReadGuard());
+  const mutationEpochRef = useRef(0);
+  const deferredSyncRef = useRef(false);
+  const loadRef = useRef<(() => Promise<void>) | null>(null);
 
   function nextMutationVersion(key: string) {
+    mutationEpochRef.current++;
     const version = (mutationVersionsRef.current.get(key) ?? 0) + 1;
     mutationVersionsRef.current.set(key, version);
     return version;
   }
 
   async function enqueueMutation(key: string, action: () => Promise<void>) {
+    mutationEpochRef.current++;
     const previous = mutationQueuesRef.current.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(action);
     mutationQueuesRef.current.set(key, next);
@@ -185,65 +168,65 @@ export function CalendarItemsManager({
     } finally {
       if (mutationQueuesRef.current.get(key) === next)
         mutationQueuesRef.current.delete(key);
+      if (mutationQueuesRef.current.size === 0 && deferredSyncRef.current) {
+        deferredSyncRef.current = false;
+        void loadRef.current?.();
+      }
     }
   }
 
-  const load = useCallback(async () => {
+  async function load() {
     if (!repository) return;
-    const request = ++loadRequestRef.current;
+    const accepts = readGuard.current.begin();
+    const startedAtEpoch = mutationEpochRef.current;
     try {
       const next = await readSettledPlanning(() =>
         repository.getCalendarWorkspace(),
       );
-      if (request === loadRequestRef.current) setWorkspace(next);
+      if (!accepts()) return;
+      const disposition = planningReadDisposition(
+        startedAtEpoch,
+        mutationEpochRef.current,
+        mutationQueuesRef.current.size,
+      );
+      if (disposition === 'defer') deferredSyncRef.current = true;
+      else if (disposition === 'reload') void loadRef.current?.();
+      else setWorkspace(next);
     } catch (error) {
-      setMessage(getErrorMessage(error));
+      if (accepts()) setMessage(getErrorMessage(error));
     } finally {
-      setLoading(false);
+      if (accepts()) setLoading(false);
     }
-  }, [repository]);
+  }
   useEffect(() => {
-    const handle = window.setTimeout(() => void load(), 0);
+    loadRef.current = load;
+  });
+  useEffect(() => {
+    const guard = readGuard.current;
+    guard.mount();
+    const handle = window.setTimeout(() => void loadRef.current?.(), 0);
     const sync = (event: Event) => {
-      if (dataChangeSource(event) !== sourceRef.current) void load();
+      if (dataChangeSource(event) !== sourceRef.current)
+        void loadRef.current?.();
     };
     window.addEventListener(MYPLAN_DATA_CHANGED, sync);
     return () => {
+      guard.dispose();
       window.clearTimeout(handle);
       window.removeEventListener(MYPLAN_DATA_CHANGED, sync);
     };
-  }, [load]);
+  }, [repository]);
 
   const occurrences = useMemo(() => {
+    if (editorOnly) return [];
     const now = new Date();
-    const earliest = workspace.sessions.reduce(
-      (value, item) =>
-        new Date(item.starts_at) < value ? new Date(item.starts_at) : value,
-      addDays(now, -365),
-    );
-    const expanded = expandRecurringSessions(
-      workspace.sessions.filter(
-        (item) =>
-          item.item_type === type &&
-          item.recurrence !== 'dates' &&
-          !item.occurrence_mode,
-      ),
-      earliest,
-      addDays(now, 730),
+    const expanded = calendarItemOccurrences(
+      workspace.sessions.filter((item) => item.item_type === type),
       workspace.occurrence_states,
-    );
-    const selected = expandRecurringSessions(
-      workspace.sessions.filter(
-        (item) =>
-          item.item_type === type &&
-          (item.recurrence === 'dates' || item.occurrence_mode),
-      ),
-      new Date('1999-12-30'),
-      new Date('2202-01-01'),
-      workspace.occurrence_states,
+      now,
     );
     const today = vietnamDateKey(now);
-    return [...expanded, ...selected]
+    return expanded
       .filter((item) => {
         const day = vietnamDateKey(item.starts_at);
         if (filter === 'completed')
@@ -255,7 +238,13 @@ export function CalendarItemsManager({
         return true;
       })
       .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
-  }, [filter, type, workspace.occurrence_states, workspace.sessions]);
+  }, [
+    editorOnly,
+    filter,
+    type,
+    workspace.occurrence_states,
+    workspace.sessions,
+  ]);
 
   const listing = useWorkspaceList(
     occurrences.map((item) => ({
@@ -279,15 +268,10 @@ export function CalendarItemsManager({
       if (openId) {
         const item = workspace.sessions.find((item) => item.id === openId);
         if (item && openOccurrenceStart) {
-          const occurrence = expandRecurringSessions(
-            [item],
-            new Date('1999-12-30'),
-            new Date('2202-01-01'),
+          const occurrence = calendarItemOccurrence(
+            item,
+            openOccurrenceStart,
             workspace.occurrence_states,
-          ).find(
-            (row) =>
-              row.occurrence_start ===
-              new Date(openOccurrenceStart).toISOString(),
           );
           if (occurrence) setEditingOccurrence(occurrence);
           else setMessage('This occurrence is no longer available.');
@@ -357,29 +341,7 @@ export function CalendarItemsManager({
     let saveFields: Array<keyof CalendarSession> = [];
     let saveVersions = new Map<keyof CalendarSession, number>();
     try {
-      const start = new Date(vietnamInputToIso(draft.starts_at));
-      const end =
-        type === 'reminder'
-          ? new Date(start.getTime() + 15 * 60_000)
-          : new Date(vietnamInputToIso(draft.ends_at));
-      const input: CalendarSessionInput = normalizeDateSchedule({
-        title: draft.title.trim(),
-        task_id: type === 'checklist' ? draft.task_id : null,
-        starts_at: start.toISOString(),
-        ends_at: end.toISOString(),
-        all_day: false,
-        timezone: 'Asia/Ho_Chi_Minh',
-        recurrence: draft.recurrence,
-        recurrence_until: draft.recurrence_until || null,
-        recurrence_interval: draft.recurrence_interval,
-        recurrence_dates:
-          draft.recurrence === 'dates' ? draft.recurrence_dates : undefined,
-        item_type: type,
-        completed_at: draft.completed_at,
-        not_needed_at: draft.not_needed_at,
-        notification_offsets: draft.notification_offsets,
-        is_pinned: false,
-      });
+      const input = calendarItemInput(draft, type);
       previousSession = draft.id
         ? workspace.sessions.find((item) => item.id === draft.id)
         : undefined;
@@ -589,7 +551,7 @@ export function CalendarItemsManager({
                     )
                     .map((field) => [
                       field,
-                      previousOccurrence?.[field] ?? null,
+                      occurrenceOutcome(previousOccurrence, item)[field],
                     ]),
                 ),
               )

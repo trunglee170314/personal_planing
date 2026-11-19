@@ -5,18 +5,19 @@ import { planningContext } from '@/lib/planning-context';
 import { TaskLink } from '@/components/task-link';
 
 import { patchOccurrence, sameOccurrenceTime } from '@/lib/occurrence-state';
+import { todayOutstanding } from '@/lib/today-items';
+import { readSettledPlanning } from '@/lib/undo-manager';
+import {
+  createPlanningReadGuard,
+  planningReadDisposition,
+} from '@/lib/planning-read-guard';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BellRing, Clock3, LoaderCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import {
-  addDays,
-  expandRecurringSessions,
-  vietnamDateKey,
-  vietnamInputToIso,
-} from '@/lib/calendar';
+import { vietnamDateKey } from '@/lib/calendar';
 import {
   getErrorMessage,
   getPlanningRepository,
@@ -60,29 +61,39 @@ export function TodayPanelV2({
   const pendingMutationsRef = useRef(0);
   const deferredSyncRef = useRef(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
+  const readGuard = useRef(createPlanningReadGuard());
   const load = useCallback(async () => {
     if (!repository) return;
+    const accepts = readGuard.current.begin();
     const startedAtEpoch = mutationEpochRef.current;
     try {
-      const next = await repository.getTodayWorkspace();
-      if (
-        startedAtEpoch !== mutationEpochRef.current ||
-        pendingMutationsRef.current > 0
-      ) {
-        deferredSyncRef.current = true;
+      const next = await readSettledPlanning(() =>
+        repository.getTodayWorkspace(),
+      );
+      if (!accepts()) return;
+      const disposition = planningReadDisposition(
+        startedAtEpoch,
+        mutationEpochRef.current,
+        pendingMutationsRef.current,
+      );
+      if (disposition !== 'apply') {
+        if (disposition === 'defer') deferredSyncRef.current = true;
+        else void loadRef.current?.();
         return;
       }
       setWorkspace(next);
     } catch (error) {
-      setMessage(getErrorMessage(error));
+      if (accepts()) setMessage(getErrorMessage(error));
     } finally {
-      setLoading(false);
+      if (accepts()) setLoading(false);
     }
   }, [repository]);
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
   useEffect(() => {
+    readGuard.current.mount();
+    const guard = readGuard.current;
     const handle = window.setTimeout(() => void load(), 0);
     const sync = (event: Event) => {
       if (dataChangeSource(event) === sourceRef.current) return;
@@ -94,6 +105,7 @@ export function TodayPanelV2({
     };
     window.addEventListener(MYPLAN_DATA_CHANGED, sync);
     return () => {
+      guard.dispose();
       window.clearTimeout(handle);
       window.removeEventListener(MYPLAN_DATA_CHANGED, sync);
     };
@@ -102,33 +114,17 @@ export function TodayPanelV2({
     const handle = window.setInterval(() => setToday(new Date()), 60_000);
     return () => window.clearInterval(handle);
   }, []);
-  const outstanding = useMemo(() => {
-    const tomorrow = addDays(
-      new Date(vietnamInputToIso(`${vietnamDateKey(today)}T00:00`)),
-      1,
-    );
-    const oldest = workspace.sessions.reduce(
-      (minimum, item) => Math.min(minimum, new Date(item.starts_at).getTime()),
-      today.getTime(),
-    );
-    return expandRecurringSessions(
-      workspace.sessions,
-      new Date(oldest),
-      tomorrow,
-      workspace.occurrence_states,
-    )
-      .filter(
-        (item) =>
-          !item.completed_at &&
-          !item.not_needed_at &&
-          vietnamDateKey(item.starts_at) <= vietnamDateKey(today),
-      )
-      .sort(
-        (a, b) =>
-          Number(b.is_pinned) - Number(a.is_pinned) ||
-          new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime(),
-      );
-  }, [today, workspace.occurrence_states, workspace.sessions]);
+  const outstanding = useMemo(
+    () =>
+      todayOutstanding(
+        {
+          sessions: workspace.sessions,
+          occurrence_states: workspace.occurrence_states,
+        },
+        today,
+      ),
+    [today, workspace.occurrence_states, workspace.sessions],
+  );
   async function toggle(item: CalendarSession & { occurrence_start?: string }) {
     if (!repository) return;
     setMessage('');
@@ -230,7 +226,8 @@ export function TodayPanelV2({
   return (
     <section aria-labelledby="today-heading">
       <p className="mb-2 text-[10px] font-bold uppercase tracking-[.15em] text-primary">
-        {today.toLocaleDateString(undefined, {
+        {today.toLocaleDateString('en-US', {
+          timeZone: 'Asia/Ho_Chi_Minh',
           weekday: 'long',
           month: 'long',
           day: 'numeric',
@@ -384,7 +381,7 @@ export function TodayPanelV2({
           })}
         </div>
         <div className="min-w-0 overflow-hidden">
-          <PlannerCalendar embedded />
+          <PlannerCalendar embedded todayKey={vietnamDateKey(today)} />
         </div>
       </div>
     </section>

@@ -2,6 +2,12 @@
 
 The Plan is a private personal-planning workspace built with React/Vinext. It connects goals, tasks, due dates, a timeline, weekly reviews, and an independent Pomodoro timer.
 
+## Calendar and Today move consistency
+
+Dragging or resizing a repeating item supports This occurrence, This and future occurrences, and Entire series. Every scope reloads the canonical Calendar workspace after saving, including materialized instances, original keys, overrides and repeat-until dates. Time changes preserve the server's current Done/Not needed outcomes. Shared editors retain pin settings, and long-running schedules remain reachable from Today and the Checklist/Reminder lists.
+
+Apply `supabase/migrations/0034_calendar_move_outcomes.sql` after 0033 before deploying this release online. It replaces only the atomic occurrence-move function; it does not rewrite existing planning records. Local picks up validation and outcome fixes after restarting its server. See [Calendar/Today verification](docs/calendar-today-qa.md) and run `bash scripts/test-calendar-today.sh` in WSL/Docker for the isolated PostgreSQL checks. Never apply test fixtures to production.
+
 ## Inherited context, repeat edits and milestone clusters
 
 Checklists show their current **Goal › Task** context. Search matches that relation even when the Checklist title does not; use `goal:career`, `task:"Learn Linux"`, or ordinary partial words. Renaming/relinking a Goal or Task updates context without copied tags.
