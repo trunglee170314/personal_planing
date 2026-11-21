@@ -234,14 +234,11 @@ export function buildTimelineLayout(
         });
     } else {
       const lanes: { tasks: TaskLayout[]; occupied: TimelineInterval[] }[] = [];
-      // A stable date ordering produces predictable lanes independent of scroll.
-      const sorted = tasks
-        .filter((task) => task.width > 0)
-        .map((task, order) => ({ task, order }))
-        .sort((a, b) => a.task.left - b.task.left || a.order - b.order);
-      for (const { task } of sorted) {
-        let lane = lanes.find((item) => fits(item.occupied, task.footprints));
-        if (!lane) {
+      // Preserve the outline's saved DFS order. Reusing an older lane could
+      // put a later Task above an intervening Task, even without date sorting.
+      for (const task of tasks.filter((task) => task.width > 0)) {
+        let lane = lanes.at(-1);
+        if (!lane || !fits(lane.occupied, task.footprints)) {
           lane = { tasks: [], occupied: [] };
           lanes.push(lane);
         }

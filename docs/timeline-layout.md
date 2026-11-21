@@ -73,6 +73,15 @@ revision. It calculates layout when the data, zoom, search or collapse state
 changes, independently of the horizontal viewport. Scrolling does not repack
 Tasks. Lane membership stays frozen during a pointer gesture and its save.
 
+Compact packing follows the outline's saved depth-first order, including manual
+sibling ordering. Each scheduled Task can join only the current last lane; if
+its complete footprint does not fit, a new lane is created. No chronological
+sort or backfill into earlier lanes is allowed. Flattening compact lanes therefore
+retains exactly the visible scheduled subsequence of the outline, including
+across parent/child branches. This can use more rows than unconstrained packing;
+saved order takes priority. Unscheduled Tasks remain hidden in compact mode, and
+Goal boundaries still flush the current lanes.
+
 Each Task owns a union of horizontal occupied intervals: its inclusive date bar
 and every rendered milestone marker or cluster, including Important labels and
 milestones outside the Task date range. Two Tasks share a lane only if none of

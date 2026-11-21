@@ -310,12 +310,12 @@ describe('Timeline compact ownership and visibility', () => {
     expect(taskGroups(result.rows)).toEqual([['parent']]);
     expect(result.plansByTaskId.has('child')).toBe(false);
   });
-  it('deterministically sorts compact tasks by date without changing original outline order', () => {
+  it('retains outline order when compact tasks have dates in the opposite order', () => {
     const f = setup([
       task('later', '2026-11-10', '2026-11-11'),
       task('earlier', '2026-11-01', '2026-11-02'),
     ]);
-    expect(taskGroups(layout(f).rows)).toEqual([['earlier', 'later']]);
+    expect(taskGroups(layout(f).rows)).toEqual([['later', 'earlier']]);
     expect(taskGroups(layout(f, false).rows)).toEqual([['later'], ['earlier']]);
   });
   it('uses planned_end for legacy tasks without a due_at value', () => {
