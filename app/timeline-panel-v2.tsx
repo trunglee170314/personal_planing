@@ -1567,9 +1567,9 @@ export function TimelinePanelV2() {
           data-timeline-focus={outlineOpen ? undefined : `${kind}:${entity.id}`}
           aria-label={`Edit ${kind} ${entity.title}`}
           title={`${entity.title}\n${plan.start} → ${plan.end}`}
-          className={`absolute inset-0 touch-none rounded-md border text-[10px] font-semibold shadow-sm hover:brightness-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${selected ? 'ring-2 ring-primary/60' : ''}`}
+          className={`timeline-bar-surface absolute inset-0 touch-none rounded-md border text-[10px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${selected ? 'ring-2 ring-primary/60' : ''}`}
           style={{
-            background: color,
+            backgroundColor: color,
             borderColor: baseColor,
             color: kind === 'goal' ? 'white' : undefined,
           }}

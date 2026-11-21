@@ -1,9 +1,17 @@
+/* Keep hover feedback in the background paint. A bar can span hundreds of
+   thousands of pixels; filters and blurred shadows add unnecessary paint layers
+   across that entire surface while horizontally scrolling. */
+.timeline-bar-surface:hover {
+  background-image: linear-gradient(#0000000a, #0000000a);
+}
+
 /* A zero-width native sticky carrier keeps the title's leading edge steady even
    near the end of a long bar. Clip only the label layer, not its hover popup.
    overflow: clip deliberately avoids creating an intermediate scrollport. */
 .timeline-label-clip {
   position: absolute;
   inset: 0;
+  z-index: 1;
   overflow: clip;
   pointer-events: none;
 }
